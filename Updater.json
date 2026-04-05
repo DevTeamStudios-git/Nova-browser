@@ -1,0 +1,7 @@
+{
+  "version": "0.7.0",
+  "notes": "• Vertical tabs & split screen\n• Collections panel\n• Web Capture tool\n• Read Aloud (TTS)\n• NTP Page Settings panel\n• Auto-updater\n• Three-dots menu revamp\n• Memory & Energy Saver\n• Auth fixes\n• NTP Add Shortcut now saves permanently",
+  "downloadUrl": "https://github.com/DeveloppementTeamStudios/nova-browser/releases",
+  "minVersion": "0.5.0",
+  "releaseDate": "2026-04-06"
+}
