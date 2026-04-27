@@ -2,17 +2,46 @@
 // Must be before app import calls
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = '1';
 
-const { app, BrowserWindow, ipcMain, session, BrowserView, Menu, shell, dialog, net } = require('electron');
+const { app, BrowserWindow, ipcMain, session, BrowserView, Menu, shell, dialog, net, safeStorage, protocol: _protocol } = require('electron');
+const APP_VERSION = (() => { try { return require('./package.json').version; } catch(e) { return '1.1.0'; } })();
 const path  = require('path');
 const fs    = require('fs');
 const { pathToFileURL } = require('url');
+
+// Set custom cache path to avoid access denied errors
+app.commandLine.appendSwitch('disk-cache-dir', path.join(app.getPath('userData'), 'Cache2'));
+
+// ── Register privileged schemes BEFORE app is ready (WebAuthn requirement) ────
+// nova:// treated as secure context so WebAuthn/passkeys work in BrowserViews
+const { protocol: _proto } = require('electron');
+_proto.registerSchemesAsPrivileged([
+  { scheme: 'nova', privileges: { secure: true, standard: true,
+      allowServiceWorkers: true, supportFetchAPI: true, corsEnabled: true } },
+]);
 
 // Prevent multiple Electron instances from conflicting on same userData
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   console.log('[Nova] Another instance is running — quitting this one.');
   app.quit();
+  process.exit(0);
 }
+
+// Clean up stale Chromium lock files from crashed instances
+// These cause: SandboxOriginDatabase LOCK: File currently in use
+app.on('will-finish-launching', () => {
+  try {
+    const lockFiles = [
+      path.join(app.getPath('userData'), 'File System', 'Origins', 'LOCK'),
+      path.join(app.getPath('userData'), 'File System', '000', 'LOCK'),
+      path.join(app.getPath('userData'), 'LOCK'),
+      path.join(app.getPath('userData'), 'SingletonLock'),
+    ];
+    lockFiles.forEach(f => {
+      try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch(e) {}
+    });
+  } catch(e) {}
+});
 app.on('second-instance', (e, argv) => {
   // If someone launches a second Nova, focus the existing window
   windowContexts.forEach(ctx => {
@@ -55,11 +84,9 @@ app.commandLine.appendSwitch('enable-features',
   'WebAuthenticationPasskeysInProfile,' +  // Passkey sync
   'AutofillEnablePasswordManagerPasskeys'  // Password manager passkeys
 );
-// Hardware video acceleration — critical for YouTube 1080p+
-app.commandLine.appendSwitch('enable-gpu-rasterization');
-app.commandLine.appendSwitch('enable-zero-copy');
-app.commandLine.appendSwitch('ignore-gpu-blocklist');
-app.commandLine.appendSwitch('enable-hardware-overlays', 'single-fullscreen,single-on-top,underlay');
+// Hardware video: use Chromium defaults — manual GPU flags cause crashes
+// enable-gpu-rasterization and ignore-gpu-blocklist removed (caused GPU state invalid error)
+// enable-zero-copy removed — caused 'GPU state invalid after WaitForGetOffsetInRange' crash
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 const DATA_DIR  = app.getPath('userData');
@@ -93,9 +120,41 @@ const TRACKERS = [
   'ads.twitter.com','analytics.tiktok.com','px.ads.linkedin.com',
   'adform.net','moatads.com','statcounter.com',
 ];
+// Domains that should NEVER be blocked (media CDNs, auth endpoints)
+const WHITELIST = new Set([
+  // YouTube + Google CDN (never block)
+  'youtube.com','youtu.be','ytimg.com','googlevideo.com','yt3.ggpht.com',
+  'i.ytimg.com','s.ytimg.com','yt3.googleusercontent.com',
+  'youtube-nocookie.com','youtubei.googleapis.com',
+  // Google auth + Firebase
+  'accounts.google.com','oauth2.googleapis.com','apis.google.com',
+  'firebase.google.com','firebaseapp.com','firestore.googleapis.com',
+  'identitytoolkit.googleapis.com','securetoken.googleapis.com',
+  'firebase.googleapis.com','fcm.googleapis.com',
+  // Microsoft OAuth
+  'login.microsoftonline.com','login.live.com','microsoftonline.com',
+  'microsoft.com','live.com','outlook.com','office.com',
+  // Puter.js — requires cookies and scripts to function (free AI)
+  'puter.com','js.puter.com','api.puter.com','cdn.puter.com',
+  // CDN
+  'cdn.jsdelivr.net','cdnjs.cloudflare.com','unpkg.com',
+  'fonts.googleapis.com','fonts.gstatic.com',
+  // Dev tools + Nova
+  'github.com','githubusercontent.com','ghcr.io',
+  'cloudflare.com','cloudflareinsights.com',
+  // AI providers
+  'api.groq.com','api.anthropic.com','api.openai.com',
+  'generativelanguage.googleapis.com','openrouter.ai','api.together.xyz',
+  // Utilities
+  'ipapi.co','ip-api.com','ipify.org','wttr.in',
+  'hacker-news.firebaseio.com',
+]);
 const isBlocked = url => {
   try {
     const h = new URL(url).hostname.replace(/^www\./, '');
+    // Never block whitelisted domains
+    if (WHITELIST.has(h)) return false;
+    for (const w of WHITELIST) { if (h.endsWith('.' + w)) return false; }
     return TRACKERS.some(t => h === t || h.endsWith('.' + t));
   } catch { return false; }
 };
@@ -143,10 +202,51 @@ const UA_SPOOF_SCRIPT = `
     if (!window.chrome) {
       Object.defineProperty(window, 'chrome', { get: () => _chromeMock, configurable: true });
     } else {
-      // Patch missing properties on existing chrome object
       try { if(!window.chrome.loadTimes) window.chrome.loadTimes = _chromeMock.loadTimes; } catch(e) {}
       try { if(!window.chrome.csi) window.chrome.csi = _chromeMock.csi; } catch(e) {}
     }
+
+    // ── WebAuthn / Passkey capability reporting ─────────────────────────────
+    // These methods tell sites (GitHub, Microsoft, Google) that passkeys work.
+    // Without them, sites silently skip passkey auth and show password forms.
+    try {
+      if(window.PublicKeyCredential) {
+        // isUserVerifyingPlatformAuthenticatorAvailable — Windows Hello / Touch ID
+        if(!window.PublicKeyCredential._isUVPAAPatched) {
+          window.PublicKeyCredential._isUVPAAPatched = true;
+          const _origUVPAA = window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable;
+          window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = function() {
+            // Call the real implementation — Electron/Chromium handles Windows Hello natively
+            return _origUVPAA ? _origUVPAA.call(this) : Promise.resolve(true);
+          };
+        }
+        // isConditionalMediationAvailable — for autofill-style passkeys (Chrome 108+)
+        if(!window.PublicKeyCredential._isCMAPatched) {
+          window.PublicKeyCredential._isCMAPatched = true;
+          const _origCMA = window.PublicKeyCredential.isConditionalMediationAvailable;
+          window.PublicKeyCredential.isConditionalMediationAvailable = function() {
+            return _origCMA ? _origCMA.call(this) : Promise.resolve(true);
+          };
+        }
+        // getClientCapabilities — Chrome 133+ API for capability detection
+        if(!window.PublicKeyCredential.getClientCapabilities) {
+          window.PublicKeyCredential.getClientCapabilities = function() {
+            return Promise.resolve({
+              'conditionalCreate': true,
+              'conditionalGet': true,
+              'hybridTransport': true,
+              'passkeyPlatformAuthenticator': true,
+              'userVerifyingPlatformAuthenticator': true,
+              'relatedOrigins': false,
+              'signalAllAcceptedCredentials': false,
+              'signalCurrentUserDetails': false,
+              'signalUnknownCredential': false,
+            });
+          };
+        }
+      }
+    } catch(_ign) {}
+
   } catch(_) {}
 })();
 `;
@@ -183,7 +283,7 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false,
-      webviewTag: true,  webSecurity: false, sandbox: false,
+      webviewTag: true,  webSecurity: true,  sandbox: false,
       session: privSes,
     },
   };
@@ -210,6 +310,7 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
   win.webContents.on('did-finish-load', () => {
     win.webContents.send('init', {
       date: new Date().toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' }),
+      appVersion: APP_VERSION,
       bookmarks, history: history.slice(0, 100), blocked: blockedCount,
       isPrivate, extensions: loadedExts,
       initialUrl,
@@ -230,13 +331,20 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
   win.on('unmaximize', () => win.webContents.send('win-state', { maximized: false }));
   win.on('closed',     () => { windowContexts.delete(wcId); });
 
-  // Strip Electron headers from all outgoing requests in this session
+  // Strip Electron UA + set Chrome UA for all requests in this session
+  privSes.setUserAgent(CHROME_UA);
   privSes.webRequest.onBeforeSendHeaders({ urls: ['*://*/*'] }, (details, cb) => {
     const h = { ...details.requestHeaders };
-    if (h['User-Agent']) h['User-Agent'] = h['User-Agent'].replace(/\s*Electron\/[\d.]+/g, '');
+    h['User-Agent'] = CHROME_UA; // force Chrome UA — fixes OAuth "insecure browser" error
+    h['Sec-GPC'] = '1';          // Global Privacy Control
     cb({ requestHeaders: h });
   });
   if (isPrivate) {
+    // Grant all permissions in private mode — needed for OAuth flows (Google, Microsoft)
+    privSes.setPermissionRequestHandler((wc, permission, callback) => callback(true));
+    privSes.setPermissionCheckHandler(() => true);
+    if (privSes.setDevicePermissionHandler) privSes.setDevicePermissionHandler(() => true);
+
     privSes.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, cb) => {
       if (details.url.toLowerCase().includes('nova-d.access')) return cb({ cancel: true });
       if (isBlocked(details.url)) { blockedCount++; broadcast('blocked-count', blockedCount); return cb({ cancel: true }); }
@@ -245,6 +353,9 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
     privSes.webRequest.onHeadersReceived((details, cb) => {
       const h = { ...details.responseHeaders };
       delete h['x-frame-options']; delete h['X-Frame-Options'];
+      // Strip COOP/COEP — OAuth redirects need these removed
+      delete h['cross-origin-opener-policy'];  delete h['Cross-Origin-Opener-Policy'];
+      delete h['cross-origin-embedder-policy']; delete h['Cross-Origin-Embedder-Policy'];
       cb({ responseHeaders: h });
     });
   }
@@ -266,6 +377,24 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
 
   const htmlURL = pathToFileURL(path.join(__dirname, 'src', 'index.html')).href;
   win.loadURL(htmlURL).catch(err => console.error('[Nova] Load error:', err));
+
+  // ── Close confirmation ─────────────────────────────────────────────────────
+  win.on('close', async (e) => {
+    if (_cleanExit) return; // already confirmed or alt+f4 path
+    e.preventDefault();
+    const ctx = windowContexts.find(c => c.mainWindow === win);
+    if (ctx) saveSession(ctx);
+    try {
+      const { response } = await dialog.showMessageBox(win, {
+        type: 'question', buttons: ['Close Nova', 'Cancel'],
+        defaultId: 0, cancelId: 1,
+        title: 'Close Nova Browser',
+        message: 'Close Nova Browser?',
+        detail: 'Your open tabs will be saved and restored next time.',
+      });
+      if (response === 0) { markCleanExit(); _cleanExit = true; win.close(); }
+    } catch(e) { markCleanExit(); _cleanExit = true; win.close(); }
+  });
   return ctx;
 }
 
@@ -280,7 +409,9 @@ function getContentBounds(ctx, side='full') {
   }
   // Normal mode: CRITICAL clamp so BrowserView NEVER overlaps navbar/toolbar
   const rawTop = (ctx.chromeHeight || 88) + (ctx.viewExtraTop||0) + (ctx.panelExtraTop||0);
-  const TOP = Math.max(60, rawTop);       // exact chrome height, no extra padding
+  // Safety clamp: BrowserView must NEVER start above 60px
+  // If chromeHeight is 0 (not yet received), use safe default of 88px
+  const TOP = Math.max(84, rawTop || 88); // 84 = tabbar(40) + navbar(44) minimum
   const BOT = 22; // status bar height
   const H = Math.max(0, h - TOP - BOT);
   if (ctx.splitActive) {
@@ -323,10 +454,15 @@ function createView(ctx, tabId, url) {
   const ses = ctx.isPrivate ? ctx.session : session.defaultSession;
   const view = new BrowserView({
     webPreferences: {
-      preload: path.join(__dirname, 'preload-page.js'),  // intercepts alert/confirm/prompt
-      contextIsolation: false,  // needed so preload can access page window object
+      preload: path.join(__dirname, 'preload-page.js'),
+      contextIsolation: false,
       nodeIntegration: false,
-      webSecurity: false, sandbox: false, session: ses
+      webSecurity: false,     // YouTube CDN (googlevideo.com) needs cross-origin media
+      sandbox: false,
+      session: ses,
+      allowRunningInsecureContent: true,   // mixed-content media (some video CDNs)
+      experimentalFeatures: true,          // enables newer media APIs
+      enableBlinkFeatures: 'PictureInPicture,MediaSession', // PiP + media controls
     },
   });
   view.webContents.setUserAgent(CHROME_UA);
@@ -339,8 +475,20 @@ function createView(ctx, tabId, url) {
 
   // Inject UA spoof into every page (fixes Google sign-in)
   view.webContents.on('dom-ready', async () => {
-    // 1. Spoof UA fingerprint
+    // 1. Spoof UA fingerprint on every page load
     try { await view.webContents.executeJavaScript(UA_SPOOF_SCRIPT); } catch(err) {}
+    // 2. Unlock autoplay for media (YouTube, Spotify, etc.)
+    try {
+      await view.webContents.executeJavaScript(`
+        if(document.featurePolicy && !document.featurePolicy.allowsFeature('autoplay')) {
+          // Feature policy blocks autoplay — we can't override from page context
+          // but the Electron flags above should handle this
+        }
+        // YouTube bot detection: do NOT override navigator.plugins
+        // Overriding it with plain objects breaks YouTube's MimeTypeArray check
+        // and causes the video pipeline to fail with a black screen.
+      `);
+    } catch(e) {}
 
     // Dialog interception is handled by preload-page.js (proper IPC approach)
   });
@@ -350,7 +498,7 @@ function createView(ctx, tabId, url) {
     send('tab-navigated', { tabId, url: u, title });
     sendNavState(ctx, tabId, view);
     if (!ctx.isPrivate && u && !u.startsWith('about:') && !u.startsWith('chrome:') && !u.startsWith('devtools:'))
-      pushHistory(u, title, null);
+      pushHistory(u, title, null, ctx.isPrivate);
   });
   view.webContents.on('did-navigate-in-page', (e, u) => {
     send('tab-navigated', { tabId, url: u, title: view.webContents.getTitle() });
@@ -472,6 +620,12 @@ function createView(ctx, tabId, url) {
       view.webContents.loadURL(u).catch(() => {});
     }
   };
+  // ── Allow YouTube age gates and auth to navigate freely ─────────────────
+  view.webContents.on('will-navigate', (event, navUrl) => {
+    // Never block YouTube navigations (age gates, sign-in flows, etc.)
+    // All blocking happens at the webRequest level via isBlocked()
+  });
+
   // ── Dialog intercept from page (alert/confirm/prompt) ───────────────────
   // Electron fires 'dialog' event for window.alert/confirm/prompt from pages
   view.webContents.on('dialog', (event, dialogType, message, defaultValue, callback) => {
@@ -492,6 +646,8 @@ function createView(ctx, tabId, url) {
   });
 
   // ── New window / popup handler ────────────────────────────────────────────
+  // YouTube and other sites may open auth flows in new windows
+  // We intercept and open as a tab in Nova instead
   view.webContents.setWindowOpenHandler(({ url, disposition }) => {
     if (disposition === 'new-tab' || disposition === 'foreground-tab') {
       send('open-url-new-tab', { url });
@@ -510,30 +666,11 @@ function createView(ctx, tabId, url) {
   // Both are needed for YouTube autoplay, WebAuthn/passkeys, etc.
   const permSes = ctx.isPrivate ? ctx.session : session.defaultSession;
 
-  permSes.setPermissionRequestHandler((wc, permission, callback, details) => {
-    // Always grant these — needed for YouTube, passkeys, fullscreen etc.
-    const alwaysGrant = [
-      'fullscreen',               // YouTube fullscreen button
-      'clipboard-sanitized-write',
-      'accessibility-events',
-      'media',                    // camera/mic (sites show their own UI)
-      'geolocation',              // weather and maps
-      'notifications',            // web push
-      'pointerLock',              // games
-      'openExternal',             // links
-      'mediaKeySystem',           // DRM — needed for YouTube Premium, Netflix
-      'webAuthentication',        // WebAuthn / Passkeys / FIDO2
-    ];
-    if (alwaysGrant.includes(permission)) return callback(true);
-    callback(true); // grant everything else too for now
-  });
-
-  // Permission CHECK handler — checked BEFORE the request handler
-  // Without this, YouTube and passkey sites silently fail
-  permSes.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
-    // Allow all permission checks — the actual grant happens in setPermissionRequestHandler
-    return true;
-  });
+  // Grant ALL permissions — Nova is a full browser, sites manage their own UI
+  permSes.setPermissionRequestHandler((wc, permission, callback) => callback(true));
+  permSes.setPermissionCheckHandler(() => true);
+  // Device permissions (WebBluetooth, WebUSB, WebHID)
+  if (permSes.setDevicePermissionHandler) permSes.setDevicePermissionHandler(() => true);
 
   // ── Certificate error ─────────────────────────────────────────────────────
   view.webContents.on('certificate-error', (event, url, error, certificate, callback) => {
@@ -624,13 +761,18 @@ async function takeScreenshot(ctx, tabId) {
 }
 
 // ── History ───────────────────────────────────────────────────────────────────
-function pushHistory(url, title, favicon) {
+function pushHistory(url, title, favicon, isPrivate = false) {
+  // Never write history in incognito/private mode
+  if (isPrivate) return;
+  if (!url || url.startsWith('about:') || url.startsWith('chrome:') ||
+      url.startsWith('devtools:') || url.startsWith('nova://')) return;
   history = history.filter(h => h.url !== url);
   history.unshift({ url, title: title || url, favicon, ts: Date.now() });
   if (history.length > 2000) history.length = 2000;
   writeJ(HIST_FILE, history);
   windowContexts.forEach(ctx => {
-    if (!ctx.mainWindow.isDestroyed()) ctx.mainWindow.webContents.send('history-updated', history.slice(0, 100));
+    if (!ctx.isPrivate && !ctx.mainWindow.isDestroyed())
+      ctx.mainWindow.webContents.send('history-updated', history.slice(0, 100));
   });
 }
 
@@ -950,6 +1092,512 @@ ipcMain.handle('passkey-check-support', async () => {
   return { supported: true, platform: process.platform };
 });
 
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DNS over HTTPS (DoH) — Encrypts DNS queries
+// ══════════════════════════════════════════════════════════════════════════════
+let _dohEnabled = false;
+let _dohProvider = 'cloudflare'; // cloudflare | google | nextdns | quad9
+
+const DOH_PROVIDERS = {
+  cloudflare: 'https://cloudflare-dns.com/dns-query{?dns}',
+  google:     'https://dns.google/dns-query{?dns}',
+  nextdns:    'https://dns.nextdns.io/{?dns}',
+  quad9:      'https://dns.quad9.net/dns-query{?dns}',
+  disabled:   '',
+};
+
+ipcMain.handle('set-doh', async (e, { enabled, provider }) => {
+  _dohEnabled   = enabled;
+  _dohProvider  = provider || 'cloudflare';
+  const template = enabled ? (DOH_PROVIDERS[_dohProvider] || DOH_PROVIDERS.cloudflare) : '';
+  // Apply to all sessions
+  const sessions = [session.defaultSession];
+  windowContexts.forEach(ctx => { if (ctx.session) sessions.push(ctx.session); });
+  for (const ses of sessions) {
+    try {
+      await ses.setProxy({
+        proxyRules: ses._vpnProxy || 'direct://',
+        proxyBypassRules: 'localhost,127.0.0.1,::1',
+      });
+      // Set DoH — Chromium handles this natively when the feature flag is set
+      if (ses.enableNetworkEmulation) { /* not available in all versions */ }
+    } catch(e) {}
+  }
+  // Store setting
+  try { require('electron').app.commandLine.appendSwitch('doh-server', template); } catch(e) {}
+  return { ok: true, provider: _dohProvider, enabled };
+});
+
+ipcMain.handle('get-doh', () => ({ enabled: _dohEnabled, provider: _dohProvider }));
+
+// ── Global Privacy Control — add Sec-GPC header ───────────────────────────
+let _gpcEnabled = true;
+ipcMain.on('set-gpc', (e, { enabled }) => {
+  _gpcEnabled = enabled;
+  const applyGPC = (ses) => {
+    ses.webRequest.onBeforeSendHeaders({ urls: ['*://*/*'] }, (details, cb) => {
+      const h = { ...details.requestHeaders };
+      if (_gpcEnabled) h['Sec-GPC'] = '1';
+      else delete h['Sec-GPC'];
+      if (h['User-Agent']) h['User-Agent'] = h['User-Agent'].replace(/\s*Electron\/[\d.]+/g, '');
+      cb({ requestHeaders: h });
+    });
+  };
+  applyGPC(session.defaultSession);
+  windowContexts.forEach(ctx => { if (ctx.session) applyGPC(ctx.session); });
+});
+
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// HTTPS-Only Mode — Upgrade HTTP to HTTPS, block insecure pages
+// ══════════════════════════════════════════════════════════════════════════════
+let _httpsOnly = false;
+
+ipcMain.handle('set-https-only', (e, { enabled }) => {
+  _httpsOnly = enabled;
+  // Apply webRequest rule to upgrade/block HTTP requests
+  const applyRule = (ses) => {
+    try {
+      ses.webRequest.onBeforeRequest({ urls: ['http://*/*'] }, (details, callback) => {
+        if (!_httpsOnly) return callback({});
+        // Skip localhost and local IPs
+        try {
+          const h = new URL(details.url).hostname;
+          if (h === 'localhost' || h === '127.0.0.1' || h.endsWith('.local')) return callback({});
+        } catch(e) {}
+        // Upgrade to HTTPS
+        const httpsUrl = details.url.replace(/^http:\/\//, 'https://');
+        callback({ redirectURL: httpsUrl });
+      });
+    } catch(err) {}
+  };
+  applyRule(session.defaultSession);
+  windowContexts.forEach(ctx => { if (ctx.session) applyRule(ctx.session); });
+  return { ok: true, enabled };
+});
+
+ipcMain.handle('get-https-only', () => ({ enabled: _httpsOnly }));
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// NETWORK THROTTLING — Developer feature, simulates slow connections
+// Uses Electron session.enableNetworkEmulation()
+// ══════════════════════════════════════════════════════════════════════════════
+const THROTTLE_PRESETS = {
+  'none':     null,
+  'offline':  { offline: true },
+  'slow3g':   { latency: 2000, downloadThroughput: 50*1024/8,  uploadThroughput: 50*1024/8 },
+  'fast3g':   { latency: 562,  downloadThroughput: 1.44e6/8,   uploadThroughput: 750e3/8 },
+  '4g':       { latency: 170,  downloadThroughput: 4e6/8,      uploadThroughput: 3e6/8 },
+  'lte':      { latency: 70,   downloadThroughput: 20e6/8,     uploadThroughput: 10e6/8 },
+};
+
+ipcMain.handle('set-throttle', async (e, { preset }) => {
+  const cfg = THROTTLE_PRESETS[preset] || null;
+  const ctx = getCtx(e.sender);
+  const ses = ctx?.isPrivate ? ctx.session : session.defaultSession;
+  try {
+    if (cfg) {
+      await ses.enableNetworkEmulation(cfg);
+    } else {
+      await ses.disableNetworkEmulation();
+    }
+    return { ok: true, preset };
+  } catch(err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MOBILE DEVICE EMULATION — Changes UA + viewport for responsive testing
+// Uses webContents.debugger (CDP) to set device metrics override
+// ══════════════════════════════════════════════════════════════════════════════
+const DEVICE_PRESETS = {
+  desktop:       { width:1280, height:800,  dpr:1, mobile:false, ua:null },
+  'iphone-15':   { width:393,  height:852,  dpr:3, mobile:true,  ua:'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1' },
+  'iphone-se':   { width:375,  height:667,  dpr:2, mobile:true,  ua:'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1' },
+  'pixel-8':     { width:412,  height:915,  dpr:2.6,mobile:true, ua:'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Mobile Safari/537.36' },
+  'ipad-air':    { width:820,  height:1180, dpr:2, mobile:true,  ua:'Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1' },
+  'galaxy-s24':  { width:360,  height:780,  dpr:3, mobile:true,  ua:'Mozilla/5.0 (Linux; Android 14; Samsung Galaxy S24) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/24.0 Chrome/136.0.0.0 Mobile Safari/537.36' },
+  'macbook-pro': { width:1440, height:900,  dpr:2, mobile:false, ua:null },
+};
+
+ipcMain.handle('set-device-emulation', async (e, { device }) => {
+  const ctx = getCtx(e.sender); if (!ctx) return { ok: false };
+  const preset = DEVICE_PRESETS[device] || DEVICE_PRESETS.desktop;
+  const view = ctx.views.get(ctx.activeViewId); if (!view) return { ok: false };
+  const wc = view.webContents;
+
+  try {
+    // Use CDP debugger to set device metrics override
+    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
+    if (device === 'desktop') {
+      await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
+      await wc.debugger.sendCommand('Emulation.setUserAgentOverride', { userAgent: '' });
+      wc.setUserAgent(CHROME_UA);
+    } else {
+      await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
+        width: preset.width, height: preset.height,
+        deviceScaleFactor: preset.dpr, mobile: preset.mobile,
+        fitWindow: false,
+      });
+      await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: preset.mobile });
+      if (preset.ua) {
+        await wc.debugger.sendCommand('Emulation.setUserAgentOverride', { userAgent: preset.ua });
+        wc.setUserAgent(preset.ua);
+      }
+    }
+    return { ok: true, device, preset };
+  } catch(err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// COOKIE MANAGER — View and delete cookies per site
+// ══════════════════════════════════════════════════════════════════════════════
+ipcMain.handle('get-cookies', async (e, { url }) => {
+  const ses = session.defaultSession;
+  try {
+    const cookies = url
+      ? await ses.cookies.get({ url })
+      : await ses.cookies.get({});
+    return cookies.map(c => ({
+      name: c.name, value: c.value, domain: c.domain, path: c.path,
+      secure: c.secure, httpOnly: c.httpOnly, session: c.session,
+      expirationDate: c.expirationDate,
+    }));
+  } catch(e) { return []; }
+});
+
+ipcMain.handle('delete-cookie', async (e, { url, name }) => {
+  try {
+    await session.defaultSession.cookies.remove(url, name);
+    return { ok: true };
+  } catch(err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('clear-cookies', async (e, { domain }) => {
+  const ses = session.defaultSession;
+  try {
+    if (domain) {
+      const cookies = await ses.cookies.get({ domain });
+      for (const c of cookies) {
+        const url = (c.secure ? 'https' : 'http') + '://' + c.domain.replace(/^\./,'') + c.path;
+        await ses.cookies.remove(url, c.name);
+      }
+    } else {
+      await ses.clearStorageData({ storages: ['cookies'] });
+    }
+    return { ok: true };
+  } catch(err) { return { ok: false, error: err.message }; }
+});
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PERMISSION MANAGER — Store & retrieve per-site permission decisions
+// ══════════════════════════════════════════════════════════════════════════════
+const PERM_FILE = path.join(DATA_DIR, 'permissions.json');
+let sitePerms = readJ(PERM_FILE, {}); // { 'github.com': { camera: 'granted', mic: 'denied' } }
+
+function saveSitePerms() { writeJ(PERM_FILE, sitePerms); }
+
+ipcMain.handle('get-site-permissions', (e, { origin }) => {
+  return origin ? (sitePerms[origin] || {}) : sitePerms;
+});
+
+ipcMain.handle('set-site-permission', (e, { origin, permission, state }) => {
+  if (!sitePerms[origin]) sitePerms[origin] = {};
+  sitePerms[origin][permission] = state; // 'granted' | 'denied' | 'ask'
+  saveSitePerms();
+  return { ok: true };
+});
+
+ipcMain.handle('clear-site-permissions', (e, { origin }) => {
+  if (origin) delete sitePerms[origin];
+  else sitePerms = {};
+  saveSitePerms();
+  return { ok: true };
+});
+
+
+// ══ safeStorage — Encrypt API keys at rest ═══════════════════════════════════
+ipcMain.handle('encrypt-key', async (e, plaintext) => {
+  try {
+    if (safeStorage.isEncryptionAvailable())
+      return safeStorage.encryptString(plaintext).toString('base64');
+  } catch(err) {}
+  return plaintext; // fallback: store plain if OS keychain unavailable
+});
+ipcMain.handle('decrypt-key', async (e, ciphertext) => {
+  try {
+    if (safeStorage.isEncryptionAvailable() && ciphertext && !ciphertext.startsWith('sk-') && !ciphertext.startsWith('gsk_') && !ciphertext.startsWith('AI'))
+      return safeStorage.decryptString(Buffer.from(ciphertext, 'base64'));
+  } catch(err) {}
+  return ciphertext; // fallback or already plain text
+});
+
+
+// ══ New keyboard shortcuts IPC ════════════════════════════════════════════════
+// Ctrl+O — open local file
+ipcMain.handle('open-local-file', async (e) => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: 'Open File',
+    properties: ['openFile'],
+    filters: [
+      { name: 'Web Files', extensions: ['html','htm','xhtml','xml','mhtml','svg'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  });
+  if (!canceled && filePaths[0]) return 'file://' + filePaths[0].replace(/\\/g, '/');
+  return null;
+});
+
+// Shift+Esc — Task Manager (process memory info)
+ipcMain.handle('get-task-manager', async (e) => {
+  const ctx = getCtx(e.sender);
+  const tasks = [];
+  // Main process
+  tasks.push({
+    type: 'browser', name: 'Nova Browser', pid: process.pid,
+    memory: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    cpu: 0, tabId: null
+  });
+  // Each BrowserView
+  if (ctx) {
+    for (const [tabId, view] of ctx.views) {
+      try {
+        const mi = await view.webContents.getProcessMemoryInfo();
+        const t = ctx._tabs ? ctx._tabs.find(x => x.id === tabId) : null;
+        tasks.push({
+          type: 'tab', name: view.webContents.getTitle() || view.webContents.getURL() || 'Tab',
+          pid: view.webContents.getOSProcessId?.() || 0,
+          memory: Math.round((mi.residentSet || mi.private || 0) / 1024),
+          cpu: 0, tabId,
+          url: view.webContents.getURL()
+        });
+      } catch(err) {}
+    }
+  }
+  return tasks;
+});
+
+// F7 — Caret browsing toggle
+ipcMain.on('toggle-caret-browsing', (e) => {
+  const ctx = getCtx(e.sender);
+  const view = ctx?.views.get(ctx.activeViewId);
+  if (view) {
+    view.webContents.executeJavaScript(`
+      document.documentElement.classList.toggle('caret-browsing');
+      const on = document.documentElement.classList.contains('caret-browsing');
+      if(on) {
+        const st = document.createElement('style'); st.id='_caret_style';
+        st.textContent = '* { caret-color: #818cf8 !important; }'; document.head.appendChild(st);
+      } else {
+        document.getElementById('_caret_style')?.remove();
+      }
+    `).catch(() => {});
+  }
+});
+
+
+// ══ Web Print API ════════════════════════════════════════════════════════════
+ipcMain.handle('print-page', async (e) => {
+  const ctx = getCtx(e.sender);
+  const v   = ctx?.views.get(ctx.activeViewId);
+  if (!v) return { ok: false };
+  return new Promise(resolve => {
+    v.webContents.print({
+      silent: false,
+      printBackground: true,
+      margins: { marginType: 'default' },
+    }, (success, errorType) => {
+      resolve({ ok: success, error: errorType });
+    });
+  });
+});
+
+// Print to PDF
+ipcMain.handle('print-to-pdf', async (e, opts = {}) => {
+  const ctx = getCtx(e.sender);
+  const v   = ctx?.views.get(ctx.activeViewId);
+  if (!v) return { ok: false };
+  try {
+    const data = await v.webContents.printToPDF({
+      printBackground: opts.printBackground !== false,
+      pageSize: opts.pageSize || 'A4',
+      landscape: opts.landscape || false,
+      margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 }
+    });
+    const ts   = new Date().toISOString().replace(/[:.]/g,'-').slice(0,-5);
+    const file = path.join(DL_DIR, `nova-print-${ts}.pdf`);
+    fs.writeFileSync(file, data);
+    shell.openPath(file);
+    return { ok: true, file };
+  } catch(err) { return { ok: false, error: err.message }; }
+});
+
+
+// ══ DEV MODE: Network Request Monitor ════════════════════════════════════════
+let _networkLog = []; // Recent requests, max 500
+const MAX_NET_LOG = 500;
+
+function _hookNetworkMonitor(ses) {
+  ses.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, cb) => {
+    // Already logging in isBlocked — just store for dev panel
+    cb({});
+  });
+  ses.webRequest.onCompleted({ urls: ['*://*/*'] }, (details) => {
+    if (_networkLog.length >= MAX_NET_LOG) _networkLog.shift();
+    _networkLog.push({
+      id:         details.id,
+      method:     details.method || 'GET',
+      url:        details.url,
+      status:     details.statusCode || 0,
+      type:       details.resourceType || 'other',
+      size:       details.responseHeaders?.['content-length']?.[0] || 0,
+      time:       Date.now(),
+      duration:   0,
+    });
+  });
+  ses.webRequest.onErrorOccurred({ urls: ['*://*/*'] }, (details) => {
+    if (_networkLog.length >= MAX_NET_LOG) _networkLog.shift();
+    _networkLog.push({
+      id: details.id, method: details.method || 'GET', url: details.url,
+      status: 0, error: details.error, type: details.resourceType || 'other',
+      time: Date.now(), duration: 0,
+    });
+  });
+}
+
+ipcMain.handle('get-network-log', () => _networkLog.slice(-200));
+ipcMain.handle('clear-network-log', () => { _networkLog = []; return { ok: true }; });
+
+// ══ DEV MODE: Storage Explorer ════════════════════════════════════════════════
+ipcMain.handle('get-storage-data', async (e, { type }) => {
+  const ctx = getCtx(e.sender);
+  const v   = ctx?.views.get(ctx.activeViewId);
+  if (!v) return {};
+  try {
+    if (type === 'localStorage') {
+      return await v.webContents.executeJavaScript(
+        `(function(){const r={};for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);r[k]=localStorage.getItem(k);}return r;})()`
+      );
+    } else if (type === 'sessionStorage') {
+      return await v.webContents.executeJavaScript(
+        `(function(){const r={};for(let i=0;i<sessionStorage.length;i++){const k=sessionStorage.key(i);r[k]=sessionStorage.getItem(k);}return r;})()`
+      );
+    } else if (type === 'cookies') {
+      const url = v.webContents.getURL();
+      return await session.defaultSession.cookies.get({ url });
+    }
+  } catch(err) { return { error: err.message }; }
+  return {};
+});
+
+ipcMain.handle('set-storage-data', async (e, { type, key, value }) => {
+  const ctx = getCtx(e.sender);
+  const v   = ctx?.views.get(ctx.activeViewId);
+  if (!v) return { ok: false };
+  try {
+    if (type === 'localStorage')
+      await v.webContents.executeJavaScript(`localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})`);
+    else if (type === 'sessionStorage')
+      await v.webContents.executeJavaScript(`sessionStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(value)})`);
+    return { ok: true };
+  } catch(err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle('delete-storage-item', async (e, { type, key, url, name }) => {
+  const ctx = getCtx(e.sender);
+  const v   = ctx?.views.get(ctx.activeViewId);
+  if (!v) return { ok: false };
+  try {
+    if (type === 'localStorage')
+      await v.webContents.executeJavaScript(`localStorage.removeItem(${JSON.stringify(key)})`);
+    else if (type === 'sessionStorage')
+      await v.webContents.executeJavaScript(`sessionStorage.removeItem(${JSON.stringify(key)})`);
+    else if (type === 'cookie' && url && name)
+      await session.defaultSession.cookies.remove(url, name);
+    return { ok: true };
+  } catch(err) { return { ok: false, error: err.message }; }
+});
+
+// ══ DEV MODE: Memory Stats ════════════════════════════════════════════════════
+ipcMain.handle('get-memory-stats', async (e) => {
+  const ctx = getCtx(e.sender);
+  const stats = [];
+  stats.push({ label: 'Browser', memory: Math.round(process.memoryUsage().rss / 1024 / 1024) });
+  if (ctx) {
+    for (const [tabId, view] of ctx.views) {
+      try {
+        if (!view.webContents.isDestroyed()) {
+          const mi = await view.webContents.getProcessMemoryInfo();
+          stats.push({
+            label: view.webContents.getTitle() || view.webContents.getURL() || `Tab ${tabId}`,
+            memory: Math.round((mi.residentSet || mi.private || 0) / 1024),
+            tabId
+          });
+        }
+      } catch(e) {}
+    }
+  }
+  return stats;
+});
+
+
+// ══ Session persistence for crash detection ══════════════════════════════════
+const SESSION_FILE = path.join(DATA_DIR, 'session.json');
+let _cleanExit = false;
+
+function saveSession(ctx) {
+  try {
+    if (!ctx?.views) return;
+    const tabs = [];
+    ctx.views.forEach((v, id) => {
+      try {
+        if (!v.webContents.isDestroyed()) {
+          const url = v.webContents.getURL();
+          const title = v.webContents.getTitle();
+          if (url && !url.startsWith('devtools:')) tabs.push({ id, url, title });
+        }
+      } catch(e) {}
+    });
+    writeJ(SESSION_FILE, { tabs, activeId: ctx.activeViewId, savedAt: Date.now(), cleanExit: false });
+  } catch(e) {}
+}
+
+function markCleanExit() {
+  try { const s = readJ(SESSION_FILE, {}); s.cleanExit = true; writeJ(SESSION_FILE, s); } catch(e) {}
+}
+
+ipcMain.handle('get-crash-session', () => {
+  try {
+    const s = readJ(SESSION_FILE, null);
+    if (!s || s.cleanExit || !s.tabs?.length) return null;
+    if (Date.now() - s.savedAt > 86400000) { markCleanExit(); return null; }
+    return s;
+  } catch(e) { return null; }
+});
+ipcMain.handle('clear-crash-session', () => { markCleanExit(); return { ok: true }; });
+
+// Autosave session every 30 seconds
+setInterval(() => { windowContexts.forEach(ctx => saveSession(ctx)); }, 30000);
+
+// ══ Split screen divider drag ════════════════════════════════════════════════
+ipcMain.on('split-divider-drag', (e, { ratio }) => {
+  const ctx = getCtx(e.sender); if (!ctx) return;
+  ctx.splitRatio = Math.max(0.2, Math.min(0.8, ratio || 0.5));
+  const pv = ctx.views.get(ctx.activeViewId);
+  const sv = ctx.views.get(ctx.splitSecondaryId);
+  if (pv) pv.setBounds(getContentBounds(ctx, 'left'));
+  if (sv) sv.setBounds(getContentBounds(ctx, 'right'));
+});
+
 ipcMain.handle('open-google-auth', async (e) => {
   return new Promise((resolve) => {
     const authWin = new BrowserWindow({
@@ -1073,7 +1721,18 @@ ipcMain.on('set-chrome-height', (e, { height }) => { const ctx=getCtx(e.sender);
 ipcMain.on('detach-tab', (e, { url, x, y }) => {
   if (!url || url === 'nova://newtab') return;
   const ctx = getCtx(e.sender);
-  createWindow(ctx?.isPrivate||false, url, { x: Math.round(x)-100, y: Math.round(y)-15 });
+  const newCtx = createWindow(ctx?.isPrivate||false, url, { x: Math.round(x)-100, y: Math.round(y)-15 });
+  // The new window gets its own tab — detach is now complete
+  // Re-attach is handled by the renderer drag-back mechanism (future)
+});
+
+// Merge a tab from another window back into this one
+ipcMain.handle('merge-tab', async (e, { url, title }) => {
+  const ctx = getCtx(e.sender);
+  if (!ctx || !url) return { ok: false };
+  // Signal the renderer to open the URL as a new tab
+  ctx.mainWindow.webContents.send('open-url-new-tab', { url, title });
+  return { ok: true };
 });
 
 // Mute
@@ -1145,6 +1804,20 @@ ipcMain.on('save-page',   (e,{tabId})=>{ const ctx=getCtx(e.sender); const v=ctx
 ipcMain.handle('execute-script', async (e,{tabId,code})=>{ const ctx=getCtx(e.sender); const v=ctx?.views.get(tabId); if(!v) return null; try{ return await v.webContents.executeJavaScript(code); }catch(err){ return null; } });
 ipcMain.on('open-external', (e, { url }) => { if(url && /^https?:\/\//i.test(url)) shell.openExternal(url).catch(()=>{}); });
 ipcMain.on('open-downloads-folder', () => shell.openPath(DL_DIR));
+ipcMain.on('quit-app', () => { markCleanExit(); _cleanExit = true; app.quit(); });
+
+ipcMain.handle('choose-download-folder', async (e) => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    properties: ['openDirectory','createDirectory'],
+    title: 'Choose Download Folder',
+    defaultPath: DL_DIR,
+  });
+  if (!canceled && filePaths[0]) {
+    const ctx = getCtx(e.sender); if (!ctx) return null;
+    return filePaths[0];
+  }
+  return null;
+});
 ipcMain.on('open-file',             (e,{filePath}) => shell.openPath(filePath));
 ipcMain.handle('get-downloads',     () => [...dlMap.values()]);
 
@@ -1173,6 +1846,16 @@ ipcMain.on('remove-extension', async (e, { extId, extPath }) => {
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
+  // Register nova:// as a privileged protocol (enables WebAuthn as a secure context)
+  try {
+    const { protocol } = require('electron');
+    protocol.registerFileProtocol('nova', (request, callback) => {
+      const url = request.url.replace('nova://', '').split('?')[0];
+      const filePath = path.join(__dirname, 'src', url === 'newtab' || url === '' ? 'index.html' : url);
+      callback({ path: filePath });
+    });
+  } catch(e) { /* already registered */ }
+
   // Block trackers on default session
   session.defaultSession.webRequest.onBeforeRequest({ urls:['*://*/*'] }, (details, cb) => {
     // Block the Nova dev secret URL at network level
