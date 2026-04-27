@@ -65,6 +65,36 @@ contextBridge.exposeInMainWorld('novaBridge', {
   getSuggestions:      d => ipcRenderer.invoke('get-suggestions',   d),
 
   // ── Split screen ──────────────────────────────────────────────────────────
+  // Shortcuts
+  openLocalFile:    () => ipcRenderer.invoke('open-local-file'),
+  getTaskManager:   () => ipcRenderer.invoke('get-task-manager'),
+  toggleCaretBrowsing: () => ipcRenderer.send('toggle-caret-browsing'),
+  // Security — safeStorage key encryption
+  encryptKey:   text     => ipcRenderer.invoke('encrypt-key', text),
+  decryptKey:   cipher   => ipcRenderer.invoke('decrypt-key', cipher),
+  // App control
+  quitApp:      ()       => ipcRenderer.send('quit-app'),
+  // Settings — image + JS toggle
+  setImageBlocking: d => ipcRenderer.send('set-image-blocking', d),
+  setJavaScript:    d => ipcRenderer.send('set-javascript', d),
+  // DoH + Privacy
+  setDoh:              d => ipcRenderer.invoke('set-doh',             d),
+  getDoh:              () => ipcRenderer.invoke('get-doh'),
+  setHttpsOnly:        d => ipcRenderer.invoke('set-https-only',      d),
+  getHttpsOnly:        () => ipcRenderer.invoke('get-https-only'),
+  // Developer tools
+  setThrottle:         d => ipcRenderer.invoke('set-throttle',        d),
+  setDeviceEmulation:  d => ipcRenderer.invoke('set-device-emulation',d),
+  // Cookie manager
+  getCookies:          d => ipcRenderer.invoke('get-cookies',         d),
+  deleteCookie:        d => ipcRenderer.invoke('delete-cookie',       d),
+  clearCookies:        d => ipcRenderer.invoke('clear-cookies',       d),
+  // Permission manager
+  getSitePermissions:  d => ipcRenderer.invoke('get-site-permissions',d),
+  setSitePermission:   d => ipcRenderer.invoke('set-site-permission', d),
+  clearSitePermissions:d => ipcRenderer.invoke('clear-site-permissions',d),
+  // Downloads
+  chooseDownloadFolder: () => ipcRenderer.invoke('choose-download-folder'),
   // Passkey / WebAuthn
   passkeyCheckSupport:  () => ipcRenderer.invoke('passkey-check-support'),
   // Sidebar
@@ -122,4 +152,67 @@ contextBridge.exposeInMainWorld('novaBridge', {
   permissionResponse:  d  => ipcRenderer.send('permission-response', d),
   onDialog:            cb => ipcRenderer.on('page-dialog-show',      (e,d)=>cb(d)),
   dialogResponse:      d  => ipcRenderer.send('dialog-response',     d),
+
+  // ── Crash recovery ──────────────────────────────────────────────────────
+  getCrashSession:     () => ipcRenderer.invoke('get-crash-session'),
+  clearCrashSession:   () => ipcRenderer.invoke('clear-crash-session'),
+
+  // ── Split screen divider ─────────────────────────────────────────────────
+  splitDividerDrag:    d  => ipcRenderer.send('split-divider-drag',  d),
+
+  // ── Print ────────────────────────────────────────────────────────────────
+  printPage:           () => ipcRenderer.invoke('print-page'),
+
+  // ── Dev mode ─────────────────────────────────────────────────────────────
+  getNetworkLog:       () => ipcRenderer.invoke('get-network-log'),
+  clearNetworkLog:     () => ipcRenderer.invoke('clear-network-log'),
+  getStorageData:      d  => ipcRenderer.invoke('get-storage-data',  d),
+  setStorageData:      d  => ipcRenderer.invoke('set-storage-data',  d),
+  deleteStorageItem:   d  => ipcRenderer.invoke('delete-storage-item', d),
+  getMemoryStats:      () => ipcRenderer.invoke('get-memory-stats'),
+
+  // ── Session & settings ───────────────────────────────────────────────────
+  getCrashSession:     () => ipcRenderer.invoke('get-crash-session'),
+  clearCrashSession:   () => ipcRenderer.invoke('clear-crash-session'),
+  isDefaultBrowser:    () => ipcRenderer.invoke('is-default-browser'),
+  setDefaultBrowser:   () => ipcRenderer.invoke('set-default-browser'),
+  removeDefaultBrowser:() => ipcRenderer.invoke('remove-default-browser'),
+  getSiteZoom:         d  => ipcRenderer.invoke('get-site-zoom',     d),
+  setSiteZoom:         d  => ipcRenderer.invoke('set-site-zoom',     d),
+  checkPwaInstallable: () => ipcRenderer.invoke('check-pwa-installable'),
+  setFocusMode:        d  => ipcRenderer.send('set-focus-mode',      d),
+  getReadingList:      () => ipcRenderer.invoke('get-reading-list'),
+  addToReadingList:    d  => ipcRenderer.invoke('add-to-reading-list', d),
+  removeFromReadingList:d => ipcRenderer.invoke('remove-from-reading-list', d),
+  clearReadingList:    () => ipcRenderer.invoke('clear-reading-list'),
+  onReadingListUpdated:cb => ipcRenderer.on('reading-list-updated',  (e,d)=>cb(d)),
+  encryptKey:          d  => ipcRenderer.invoke('encrypt-key',       d),
+  decryptKey:          d  => ipcRenderer.invoke('decrypt-key',       d),
+  quitApp:             () => ipcRenderer.send('quit-app'),
+  hardReload:          d  => ipcRenderer.invoke('hard-reload',       d),
+  saveBookmarks:       d  => ipcRenderer.invoke('save-bookmarks',    d),
+  onDownloadDone:      cb => ipcRenderer.on('download-done',         (e,d)=>cb(d)),
+  onDownloadError:     cb => ipcRenderer.on('download-error',        (e,d)=>cb(d)),
+  onNewDownload:       cb => ipcRenderer.on('new-download',          (e,d)=>cb(d)),
+  onHelpMeWrite:       cb => ipcRenderer.on('help-me-write',         (e,d)=>cb(d)),
+  helpMeWrite:         d  => ipcRenderer.send('help-me-write',       d),
+  openLocalFile:       () => ipcRenderer.invoke('open-local-file'),
+  getTaskManager:      () => ipcRenderer.invoke('get-task-manager'),
+  toggleCaretBrowsing: () => ipcRenderer.send('toggle-caret-browsing'),
+  setImageBlocking:    d  => ipcRenderer.send('set-image-blocking',  d),
+  setJavaScript:       d  => ipcRenderer.send('set-javascript',      d),
+  setDoh:              d  => ipcRenderer.invoke('set-doh',           d),
+  getDoh:              () => ipcRenderer.invoke('get-doh'),
+  setHttpsOnly:        d  => ipcRenderer.invoke('set-https-only',    d),
+  getHttpsOnly:        () => ipcRenderer.invoke('get-https-only'),
+  setThrottle:         d  => ipcRenderer.invoke('set-throttle',      d),
+  setDeviceEmulation:  d  => ipcRenderer.invoke('set-device-emulation', d),
+  getCookies:          d  => ipcRenderer.invoke('get-cookies',       d),
+  deleteCookie:        d  => ipcRenderer.invoke('delete-cookie',     d),
+  clearCookies:        d  => ipcRenderer.invoke('clear-cookies',     d),
+  getSitePermissions:  d  => ipcRenderer.invoke('get-site-permissions', d),
+  setSitePermission:   d  => ipcRenderer.invoke('set-site-permission', d),
+  clearSitePermissions:d  => ipcRenderer.invoke('clear-site-permissions', d),
+  chooseDownloadFolder:() => ipcRenderer.invoke('choose-download-folder'),
+  passkeyCheckSupport: () => ipcRenderer.invoke('passkey-check-support'),
 });
