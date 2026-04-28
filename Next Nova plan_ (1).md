@@ -2589,3 +2589,4 @@ Can you make Nova support the stuffs that usualy browser support ?
 <img width="1150" height="931" alt="image" src="https://github.com/user-attachments/assets/ba4c220b-3deb-424d-8f40-076e91957768" />
 
 Now Nova is taking way more time to load pages.
+The fullscreen message is no longer showing.
