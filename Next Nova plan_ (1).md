@@ -2587,3 +2587,5 @@ Can you make Nova support the stuffs that usualy browser support ?
 <img width="1280" height="738" alt="image" src="https://github.com/user-attachments/assets/e5df8375-b75f-4b53-98ae-68e0622dd8ec" />
 <img width="1229" height="933" alt="image" src="https://github.com/user-attachments/assets/8e98cd75-41db-4a69-aad6-dfa783cb40df" />
 <img width="1150" height="931" alt="image" src="https://github.com/user-attachments/assets/ba4c220b-3deb-424d-8f40-076e91957768" />
+
+Now Nova is taking way more time to load pages.
