@@ -1,6 +1,8 @@
 // ── Pre-app setup ─────────────────────────────────────────────────────────────
 // Must be before app import calls
-process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = '1';
+// NOTE: security warnings used to be silenced here. Electron's dev-time
+// warnings are exactly how footguns like the ones removed below get caught,
+// so we no longer suppress them.
 
 const { app, BrowserWindow, ipcMain, session, BrowserView, Menu, shell, dialog, net, safeStorage, protocol: _protocol } = require('electron');
 const APP_VERSION = (() => { try { return require('./package.json').version; } catch(e) { return '1.1.0'; } })();
@@ -55,9 +57,16 @@ app.on('second-instance', (e, argv) => {
 // Fix Google sign-in: spoof Chrome command-line flags
 // NOTE: CrossOriginOpenerPolicy must NOT be disabled — YouTube needs it
 // We strip COOP headers at the network layer instead (see webRequest below)
-app.commandLine.appendSwitch('disable-features', 'IsolateOrigins');
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
-app.commandLine.appendSwitch('no-sandbox');
+// NOTE: 'disable-features: IsolateOrigins' and '--no-sandbox' were removed.
+// Both disable core Chromium security isolation (site isolation + the
+// Chromium sandbox) for every process, including tabs loading arbitrary
+// websites. Electron explicitly says --no-sandbox is for testing only.
+// Renderer sandboxing is enabled per-BrowserWindow/BrowserView below instead
+// (webPreferences.sandbox: true), which is the supported, scoped way to do
+// this. If a specific site breaks under site isolation, fix it narrowly
+// (e.g. via webRequest header changes) rather than disabling isolation
+// globally again.
 
 // ── Fix cache/GPU errors (Images 1 & 2 in bug report) ────────────────────────
 // Prevents: "Unable to move the cache: Access is denied"
@@ -73,7 +82,13 @@ app.commandLine.appendSwitch('disable-session-crashed-bubble');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
-app.commandLine.appendSwitch('ignore-certificate-errors');
+// NOTE: '--ignore-certificate-errors' removed — it told Chromium to accept
+// *any* invalid HTTPS certificate on *every* site, globally, which defeats
+// TLS entirely and makes Nova trivially MITM-able. 'allow-insecure-localhost'
+// is kept — it only relaxes cert checks for 127.0.0.1/localhost, which is a
+// normal, scoped allowance for local dev servers. Real certificate problems
+// are now handled per-tab via the 'certificate-error' handler below, which
+// denies by default instead of always allowing.
 app.commandLine.appendSwitch('allow-insecure-localhost');
 // ── YouTube / media playback fixes ───────────────────────────────────────────
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
@@ -160,7 +175,15 @@ const isBlocked = url => {
 };
 
 // ── Chrome UA (no Electron) ───────────────────────────────────────────────────
-const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36';
+// Built from the actual bundled Chromium version instead of a hardcoded
+// number. The old string claimed 'Chrome/136' regardless of the real engine
+// (Chromium 122 on Electron 29), which lies to every site's feature/bug
+// detection and gets worse every time Electron is upgraded without this
+// being touched by hand. We still drop the 'Electron/' and app tokens
+// (some sites, notably Google OAuth, refuse to sign in inside an
+// Electron-flagged browser) but the Chrome/Safari version now matches
+// what's actually running.
+const CHROME_UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
 
 // Script injected into every page to remove Electron fingerprints
 const UA_SPOOF_SCRIPT = `
@@ -269,7 +292,91 @@ function isSafeURL(url) {
   return safe.test(url) || url === 'about:blank' || url === 'about:newtab';
 }
 
-// ── Create Window ─────────────────────────────────────────────────────────────
+// ── Permission manager ───────────────────────────────────────────────────────
+// Replaces the previous "grant every site every permission" handlers.
+// Decisions are per-origin and per-permission. Default-session decisions
+// persist to disk; private-session decisions live only in memory for that
+// session's lifetime, so private mode still leaves no trace.
+const PERMISSIONS_STORE_PATH = path.join(app.getPath('userData'), 'permissions.json');
+let persistentPermissions = {};
+try { persistentPermissions = JSON.parse(fs.readFileSync(PERMISSIONS_STORE_PATH, 'utf8')) || {}; } catch (e) {}
+function savePersistentPermissions() {
+  try { fs.writeFileSync(PERMISSIONS_STORE_PATH, JSON.stringify(persistentPermissions)); } catch (e) {}
+}
+const privatePermissionsBySession = new WeakMap();
+const permissionHandlersAttached = new WeakSet();
+
+// Permissions with no meaningful privacy/security exposure — safe to
+// auto-grant, matching what real browsers auto-allow without prompting.
+const AUTO_ALLOW_PERMISSIONS = new Set(['fullscreen', 'pointerLock', 'clipboard-sanitized-write', 'background-sync']);
+
+function permStoreFor(ses) {
+  if (ses === session.defaultSession) return persistentPermissions;
+  if (!privatePermissionsBySession.has(ses)) privatePermissionsBySession.set(ses, {});
+  return privatePermissionsBySession.get(ses);
+}
+function permOrigin(webContents, requestingUrl) {
+  try { return new URL(requestingUrl || webContents.getURL()).origin; } catch (e) { return null; }
+}
+function rememberDecision(ses, origin, permission, allow) {
+  if (!origin) return;
+  const store = permStoreFor(ses);
+  store[origin] = store[origin] || {};
+  store[origin][permission] = allow;
+  if (ses === session.defaultSession) savePersistentPermissions();
+}
+
+// Attaches real request/check handlers to a session, once. Unknown
+// permissions are denied by default (never silently allowed) until the site
+// asks and the user explicitly approves via the native prompt below.
+// TODO(Phase 3 of the security roadmap): replace the native dialog with an
+// in-page Nova permission prompt (per Settings > Site Permissions in the plan
+// doc) — this is a functional stopgap, not the final UX.
+function attachPermissionHandlers(ses) {
+  if (permissionHandlersAttached.has(ses)) return;
+  permissionHandlersAttached.add(ses);
+
+  ses.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    if (AUTO_ALLOW_PERMISSIONS.has(permission)) return true;
+    const origin = requestingOrigin || (webContents && permOrigin(webContents));
+    const store = permStoreFor(ses);
+    return !!(origin && store[origin] && store[origin][permission] === true);
+  });
+
+  ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if (AUTO_ALLOW_PERMISSIONS.has(permission)) return callback(true);
+    const origin = permOrigin(webContents, details && details.requestingUrl);
+    const store = permStoreFor(ses);
+    if (origin && store[origin] && store[origin][permission] !== undefined) {
+      return callback(store[origin][permission]);
+    }
+    const parentWin = BrowserWindow.fromWebContents(webContents) || BrowserWindow.getFocusedWindow();
+    try {
+      const { response, checkboxChecked } = dialog.showMessageBoxSync(parentWin, {
+        type: 'question',
+        buttons: ['Block', 'Allow'],
+        defaultId: 0,
+        cancelId: 0,
+        title: 'Permission request',
+        message: `${origin || 'This site'} wants to use your ${permission}.`,
+        checkboxLabel: 'Remember this choice for this site',
+        checkboxChecked: true,
+      });
+      const allow = response === 1;
+      if (checkboxChecked) rememberDecision(ses, origin, permission, allow);
+      callback(allow);
+    } catch (e) {
+      callback(false);
+    }
+  });
+
+  // WebUSB/WebHID/WebSerial device pairing: off by default. These grant
+  // access to physical hardware and almost nothing needs them; revisit with
+  // a proper per-device prompt if a real use case shows up.
+  if (ses.setDevicePermissionHandler) ses.setDevicePermissionHandler(() => false);
+}
+
+
 function createWindow(isPrivate = false, initialUrl = null, pos = null) {
   const ctxId   = ++ctxIdCounter;
   const privSes = isPrivate
@@ -283,13 +390,30 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false,
-      webviewTag: true,  webSecurity: true,  sandbox: false,
+      webviewTag: true,  webSecurity: true,  sandbox: true,
       session: privSes,
     },
   };
   if (pos) { winOpts.x = pos.x; winOpts.y = pos.y; }
 
   const win = new BrowserWindow(winOpts);
+
+  // ── <webview> hardening (sidebar mini-browser) ───────────────────────────
+  // webviewTag is enabled for the #sidebar-webview element, which loads
+  // arbitrary sites. Electron recommends validating webview creation via
+  // 'will-attach-webview' so a compromised/malicious renderer can't attach a
+  // webview with nodeIntegration, a custom preload, or a disabled sandbox.
+  win.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete webPreferences.preload;
+    delete webPreferences.preloadURL;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.webSecurity = true;
+    webPreferences.allowRunningInsecureContent = false;
+    webPreferences.experimentalFeatures = false;
+    if (params.partition !== 'persist:sidebar') event.preventDefault();
+  });
 
   // Strip Electron from outgoing UA for the UI window
   win.webContents.setUserAgent(CHROME_UA);
@@ -340,10 +464,7 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
     cb({ requestHeaders: h });
   });
   if (isPrivate) {
-    // Grant all permissions in private mode — needed for OAuth flows (Google, Microsoft)
-    privSes.setPermissionRequestHandler((wc, permission, callback) => callback(true));
-    privSes.setPermissionCheckHandler(() => true);
-    if (privSes.setDevicePermissionHandler) privSes.setDevicePermissionHandler(() => true);
+    attachPermissionHandlers(privSes);
 
     privSes.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, cb) => {
       if (details.url.toLowerCase().includes('nova-d.access')) return cb({ cancel: true });
@@ -455,19 +576,32 @@ function createView(ctx, tabId, url) {
   const view = new BrowserView({
     webPreferences: {
       preload: path.join(__dirname, 'preload-page.js'),
+      // contextIsolation stays false on purpose: preload-page.js overrides
+      // window.alert/confirm/prompt directly on the page's own window object
+      // so Nova can show its own dialog UI, which only works when preload
+      // shares the page's JS context. This is a real, narrow trade-off
+      // (a compromised page could in principle tamper with that preload's
+      // globals) — everything else below is now locked down to compensate.
       contextIsolation: false,
       nodeIntegration: false,
-      webSecurity: false,     // YouTube CDN (googlevideo.com) needs cross-origin media
-      sandbox: false,
+      webSecurity: true,
+      sandbox: true,
       session: ses,
-      allowRunningInsecureContent: true,   // mixed-content media (some video CDNs)
-      experimentalFeatures: true,          // enables newer media APIs
-      enableBlinkFeatures: 'PictureInPicture,MediaSession', // PiP + media controls
+      // allowRunningInsecureContent, experimentalFeatures, and
+      // enableBlinkFeatures were removed: they weakened mixed-content and
+      // same-origin protections for every site to work around one media
+      // provider. PiP/MediaSession now ship as stable Chromium features on
+      // any reasonably current Electron, so they shouldn't need the Blink
+      // feature flags at all. If a specific YouTube/media regression shows
+      // up, fix it narrowly (e.g. a scoped webRequest header rule for that
+      // domain) instead of reinstating a global bypass.
     },
   });
   view.webContents.setUserAgent(CHROME_UA);
   // YouTube checks session-level UA too
-  try { ses.setUserAgent(CHROME_UA, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'); } catch(e) {}
+  // 2nd arg to setUserAgent is acceptLanguages, not another UA string —
+  // the old code passed a duplicate UA there by mistake.
+  try { ses.setUserAgent(CHROME_UA, 'en-US,en'); } catch(e) {}
   view.setBounds(getContentBounds(ctx));
   view.setAutoResize({ width: true, height: true });
 
@@ -661,34 +795,21 @@ function createView(ctx, tabId, url) {
   });
 
   // ── Permission request + check handlers ─────────────────────────────────────
-  // setPermissionRequestHandler: called when site requests a permission
-  // setPermissionCheckHandler:   called when site checks if permission is granted
-  // Both are needed for YouTube autoplay, WebAuthn/passkeys, etc.
-  const permSes = ctx.isPrivate ? ctx.session : session.defaultSession;
-
-  // Grant ALL permissions — Nova is a full browser, sites manage their own UI
-  permSes.setPermissionRequestHandler((wc, permission, callback) => callback(true));
-  permSes.setPermissionCheckHandler(() => true);
-  // Device permissions (WebBluetooth, WebUSB, WebHID)
-  if (permSes.setDevicePermissionHandler) permSes.setDevicePermissionHandler(() => true);
+  // Real per-origin handlers are attached once per session in
+  // attachPermissionHandlers() (createWindow for private sessions; here for
+  // the shared default session, since createView() is where we first see it).
+  attachPermissionHandlers(ctx.isPrivate ? ctx.session : session.defaultSession);
 
   // ── Certificate error ─────────────────────────────────────────────────────
+  // Previously every branch called callback(true) — i.e. Nova accepted ANY
+  // certificate error on ANY site, which is equivalent to the
+  // --ignore-certificate-errors flag and defeats TLS. Deny by default and let
+  // the renderer show a warning (like a normal browser's interstitial) instead
+  // of silently continuing to a possibly-MITM'd connection.
   view.webContents.on('certificate-error', (event, url, error, certificate, callback) => {
     event.preventDefault();
-    // For non-critical errors (expired certs, mismatched names), allow through
-    // YouTube and many CDNs use wildcard/intermediate certs that Electron rejects
-    const nonCritical = [
-      'net::ERR_CERT_DATE_INVALID',
-      'net::ERR_CERT_COMMON_NAME_INVALID',
-      'net::ERR_CERT_AUTHORITY_INVALID',
-      'net::ERR_CERT_WEAK_SIGNATURE_ALGORITHM',
-    ];
-    if (nonCritical.includes(error)) {
-      callback(true); // allow — same as ignore-certificate-errors flag
-    } else {
-      send('certificate-error', { url, error, tabId });
-      callback(true); // allow and notify renderer
-    }
+    send('certificate-error', { url, error, tabId });
+    callback(false);
   });
 
   // ── Media playback state ──────────────────────────────────────────────────
@@ -1801,7 +1922,20 @@ ipcMain.on('open-devtools', (e, { tabId }) => {
 });
 ipcMain.on('print-page',  (e,{tabId})=>{ const ctx=getCtx(e.sender); const v=ctx?.views.get(tabId); if(v) v.webContents.print(); });
 ipcMain.on('save-page',   (e,{tabId})=>{ const ctx=getCtx(e.sender); const v=ctx?.views.get(tabId); if(v) v.webContents.savePage(require('path').join(DL_DIR,'page-'+Date.now()+'.html'),'HTMLComplete').catch(()=>{}); });
-ipcMain.handle('execute-script', async (e,{tabId,code})=>{ const ctx=getCtx(e.sender); const v=ctx?.views.get(tabId); if(!v) return null; try{ return await v.webContents.executeJavaScript(code); }catch(err){ return null; } });
+// 'execute-script' is only called by Nova's own trusted UI (index.html, via
+// preload.js's contextBridge), never by web content, and today it's only ever
+// invoked with fixed, hardcoded script templates (reader mode / read-aloud
+// text extraction) — never with page-derived strings. It's still a raw
+// arbitrary-JS-into-page primitive, so at minimum validate the shape of what
+// crosses the bridge; a compromised/XSS'd Nova UI is the residual risk this
+// doesn't close. Follow-up: replace this with a small enum of named
+// operations instead of accepting raw code.
+ipcMain.handle('execute-script', async (e, { tabId, code } = {}) => {
+  const ctx = getCtx(e.sender); const v = ctx?.views.get(tabId);
+  if (!v) return null;
+  if (typeof code !== 'string' || code.length > 20000) return null;
+  try { return await v.webContents.executeJavaScript(code); } catch (err) { return null; }
+});
 ipcMain.on('open-external', (e, { url }) => { if(url && /^https?:\/\//i.test(url)) shell.openExternal(url).catch(()=>{}); });
 ipcMain.on('open-downloads-folder', () => shell.openPath(DL_DIR));
 ipcMain.on('quit-app', () => { markCleanExit(); _cleanExit = true; app.quit(); });
