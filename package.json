@@ -9,26 +9,32 @@
     "build": "electron-builder --win --x64",
     "build:all": "electron-builder --win --mac --linux",
     "build:portable": "electron-builder --win portable",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps",
+    "test": "node --test tests/*.test.js"
   },
   "build": {
     "appId": "com.novateam.novabrowser",
     "productName": "Nova Browser",
     "copyright": "Copyright © 2026 Developpement Team Studios",
-    
     "directories": {
       "output": "dist",
       "buildResources": "build-assets"
     },
     "files": [
       "main.js",
+      "ai-request.js",
       "preload.js",
-      "src/**/*",
+      "preload-page.js",
+      "index.html",
+      "renderer.js",
       "nova-adblocker/**/*",
       "node_modules/**/*",
       "!node_modules/.cache",
       "!**/*.map",
-      "!**/*.md"
+      "!**/*.md",
+      "ui-server.js",
+      "i18n.js",
+      "storage-migration.html"
     ],
     "extraResources": [
       {
@@ -37,17 +43,19 @@
       }
     ],
     "win": {
-      
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
-        
       ],
       "icon": "build-assets/icon.ico",
       "verifyUpdateCodeSignature": false,
@@ -75,7 +83,10 @@
       "category": "public.app-category.utilities"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "build-assets/icon.png",
       "category": "Network"
     },

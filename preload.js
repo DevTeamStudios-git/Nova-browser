@@ -1,5 +1,18 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Preserve file-origin preferences when upgrading to the sign-in-capable origin.
+if (location.protocol === 'http:' && location.hostname === 'localhost') {
+  try {
+    if (!localStorage.getItem('novaOriginMigrated')) {
+      const preferences = ipcRenderer.sendSync('get-legacy-preferences');
+      for (const [key, value] of Object.entries(preferences || {})) {
+        if (localStorage.getItem(key) === null) localStorage.setItem(key, value);
+      }
+      localStorage.setItem('novaOriginMigrated', '1');
+    }
+  } catch (error) { console.warn('Nova preference migration could not complete.'); }
+}
+
 contextBridge.exposeInMainWorld('novaBridge', {
   // ── Tabs ──────────────────────────────────────────────────────────────────
   tabCreated:          d => ipcRenderer.send('tab-created',         d),
@@ -18,6 +31,10 @@ contextBridge.exposeInMainWorld('novaBridge', {
   winClose:            () => ipcRenderer.send('win-close'),
   newWindow:           d  => ipcRenderer.send('new-window',         d),
   resizeView:          d  => ipcRenderer.send('resize-view',        d),
+  setPopupVisible:     visible => ipcRenderer.send('popup-visible', { visible }),
+  popupFrameReady:     revision => ipcRenderer.send('popup-frame-ready', { revision }),
+  onPopupFrame:        cb => ipcRenderer.on('popup-frame', (_e, data) => cb(data)),
+  onClosePopups:       cb => ipcRenderer.on('close-browser-popups', () => cb()),
   setChromeHeight:     d  => ipcRenderer.send('set-chrome-height',  d),
   detachTab:           d  => ipcRenderer.send('detach-tab',         d),
   toggleFullscreen:    () => ipcRenderer.send('toggle-fullscreen'),
@@ -99,11 +116,10 @@ contextBridge.exposeInMainWorld('novaBridge', {
   passkeyCheckSupport:  () => ipcRenderer.invoke('passkey-check-support'),
   // Sidebar
   resizeSidebar:       d => ipcRenderer.send('resize-sidebar',     d),
-  // Google OAuth
-  openGoogleAuth:      () => ipcRenderer.invoke('open-google-auth'),
   // Overlay (hides BrowserView when dialogs/modals open)
-  overlayShow:         () => ipcRenderer.send('overlay-show'),
-  overlayHide:         () => ipcRenderer.send('overlay-hide'),
+  overlayShow:         (owner = 'legacy') => ipcRenderer.send('overlay-show', { owner }),
+  overlayHide:         (owner = 'legacy') => ipcRenderer.send('overlay-hide', { owner }),
+  aiRequest:           request => ipcRenderer.invoke('ai-request', request),
   // VPN
   vpnConnect:          d => ipcRenderer.invoke('vpn-connect',         d),
   vpnDisconnect:       () => ipcRenderer.invoke('vpn-disconnect'),

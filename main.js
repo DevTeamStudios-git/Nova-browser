@@ -6,6 +6,8 @@ const { app, BrowserWindow, ipcMain, session, BrowserView, Menu, shell, dialog, 
 const APP_VERSION = (() => { try { return require('./package.json').version; } catch(e) { return '1.1.0'; } })();
 const path  = require('path');
 const fs    = require('fs');
+const { requestAI } = require('./ai-request');
+const { startUIServer } = require('./ui-server');
 const { pathToFileURL } = require('url');
 
 // Set custom cache path to avoid access denied errors
@@ -159,100 +161,16 @@ const isBlocked = url => {
   } catch { return false; }
 };
 
-// ── Chrome UA (no Electron) ───────────────────────────────────────────────────
-const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36';
-
-// Script injected into every page to remove Electron fingerprints
-const UA_SPOOF_SCRIPT = `
-(function(){
-  try {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
-    if (navigator.userAgentData) {
-      const brands = [
-        { brand: 'Not/A)Brand', version: '8' },
-        { brand: 'Chromium',    version: '136' },
-        { brand: 'Google Chrome', version: '136' },
-      ];
-      const uad = {
-        brands, mobile: false, platform: 'Windows',
-        getHighEntropyValues: async (hints) => ({
-          brands,
-          mobile: false,
-          platform: 'Windows',
-          architecture: 'x86', bitness: '64',
-          platformVersion: '10.0.0',
-          uaFullVersion: '136.0.0.0',
-          fullVersionList: brands.map(b => ({ brand: b.brand, version: b.version + '.0.0.0' })),
-        }),
-      };
-      Object.defineProperty(navigator, 'userAgentData', { get: () => uad, configurable: true });
-    }
-    // window.chrome — YouTube and Google services require specific properties
-    const _chromeMock = {
-      runtime: { id: undefined, connect: ()=>{}, sendMessage: ()=>{} },
-      loadTimes: () => ({ requestTime: Date.now()/1000, startLoadTime: Date.now()/1000,
-        commitLoadTime: Date.now()/1000, finishDocumentLoadTime: 0, finishLoadTime: 0,
-        firstPaintTime: 0, firstPaintAfterLoadTime: 0, navigationType: 'Other',
-        wasFetchedViaSpdy: true, wasNpnNegotiated: true, npnNegotiatedProtocol: 'h2',
-        wasAlternateProtocolAvailable: false, connectionInfo: 'h2' }),
-      csi: () => ({ startE: Date.now(), onloadT: Date.now(), pageT: 1, tran: 15 }),
-      app: { isInstalled: false, InstallState: {}, RunningState: {} },
-      webstore: { onInstallStageChanged: {}, onDownloadProgress: {} },
-    };
-    if (!window.chrome) {
-      Object.defineProperty(window, 'chrome', { get: () => _chromeMock, configurable: true });
-    } else {
-      try { if(!window.chrome.loadTimes) window.chrome.loadTimes = _chromeMock.loadTimes; } catch(e) {}
-      try { if(!window.chrome.csi) window.chrome.csi = _chromeMock.csi; } catch(e) {}
-    }
-
-    // ── WebAuthn / Passkey capability reporting ─────────────────────────────
-    // These methods tell sites (GitHub, Microsoft, Google) that passkeys work.
-    // Without them, sites silently skip passkey auth and show password forms.
-    try {
-      if(window.PublicKeyCredential) {
-        // isUserVerifyingPlatformAuthenticatorAvailable — Windows Hello / Touch ID
-        if(!window.PublicKeyCredential._isUVPAAPatched) {
-          window.PublicKeyCredential._isUVPAAPatched = true;
-          const _origUVPAA = window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable;
-          window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = function() {
-            // Call the real implementation — Electron/Chromium handles Windows Hello natively
-            return _origUVPAA ? _origUVPAA.call(this) : Promise.resolve(true);
-          };
-        }
-        // isConditionalMediationAvailable — for autofill-style passkeys (Chrome 108+)
-        if(!window.PublicKeyCredential._isCMAPatched) {
-          window.PublicKeyCredential._isCMAPatched = true;
-          const _origCMA = window.PublicKeyCredential.isConditionalMediationAvailable;
-          window.PublicKeyCredential.isConditionalMediationAvailable = function() {
-            return _origCMA ? _origCMA.call(this) : Promise.resolve(true);
-          };
-        }
-        // getClientCapabilities — Chrome 133+ API for capability detection
-        if(!window.PublicKeyCredential.getClientCapabilities) {
-          window.PublicKeyCredential.getClientCapabilities = function() {
-            return Promise.resolve({
-              'conditionalCreate': true,
-              'conditionalGet': true,
-              'hybridTransport': true,
-              'passkeyPlatformAuthenticator': true,
-              'userVerifyingPlatformAuthenticator': true,
-              'relatedOrigins': false,
-              'signalAllAcceptedCredentials': false,
-              'signalCurrentUserDetails': false,
-              'signalUnknownCredential': false,
-            });
-          };
-        }
-      }
-    } catch(_ign) {}
-
-  } catch(_) {}
-})();
-`;
+// Report the engine actually rendering the page so sites select supported features.
+const CHROME_UA = app.userAgentFallback
+  .replace(/\sElectron\/\S+/g, '')
+  .replace(/\snova-browser\/\S+/gi, '');
 
 // ── Window contexts ───────────────────────────────────────────────────────────
 const windowContexts = new Map();
+let uiServer;
+let legacyPreferences = {};
+let starting = true;
 let ctxIdCounter = 0;
 const getCtx = sender => windowContexts.get(sender.id);
 
@@ -270,6 +188,23 @@ function isSafeURL(url) {
 }
 
 // ── Create Window ─────────────────────────────────────────────────────────────
+async function readLegacyPreferences() {
+  const migration = new BrowserWindow({ show: false, webPreferences: {
+    nodeIntegration: false, contextIsolation: true, sandbox: true,
+  } });
+  try {
+    await migration.loadURL(pathToFileURL(path.join(__dirname, 'storage-migration.html')).href);
+    return await migration.webContents.executeJavaScript(`Object.fromEntries(
+      Object.keys(localStorage).filter(key => key.startsWith('nova')).map(key => [key, localStorage.getItem(key)])
+    )`);
+  } catch { return {}; }
+  finally { migration.destroy(); }
+}
+ipcMain.on('get-legacy-preferences', event => {
+  const ctx = getCtx(event.sender);
+  event.returnValue = ctx && !ctx.isPrivate ? legacyPreferences : {};
+});
+
 function createWindow(isPrivate = false, initialUrl = null, pos = null) {
   const ctxId   = ++ctxIdCounter;
   const privSes = isPrivate
@@ -305,7 +240,7 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
   windowContexts.set(wcId, ctx);
 
   win.once('ready-to-show', () => { win.show(); win.focus(); });
-  setTimeout(() => { if (!win.isVisible()) { win.show(); win.focus(); } }, 2000);
+  setTimeout(() => { if (!win.isDestroyed() && !win.isVisible()) { win.show(); win.focus(); } }, 2000);
 
   win.webContents.on('did-finish-load', () => {
     win.webContents.send('init', {
@@ -317,7 +252,13 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
     });
   });
   win.webContents.on('console-message', (_e, _l, m) => console.log(`[UI:${ctxId}]`, m));
-  win.on('resize',     () => repositionView(ctx));
+  win.on('resize', () => {
+    if (ctx._popupOpen) {
+      setPopupVisible(ctx, false);
+      win.webContents.send('close-browser-popups');
+    }
+    repositionView(ctx);
+  });
   win.on('enter-full-screen', () => {
     // BrowserView fills entire window in fullscreen
     if (!ctx.mainWindow.isDestroyed()) ctx.mainWindow.webContents.send('fullscreen-change', { active: true });
@@ -335,7 +276,6 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
   privSes.setUserAgent(CHROME_UA);
   privSes.webRequest.onBeforeSendHeaders({ urls: ['*://*/*'] }, (details, cb) => {
     const h = { ...details.requestHeaders };
-    h['User-Agent'] = CHROME_UA; // force Chrome UA — fixes OAuth "insecure browser" error
     h['Sec-GPC'] = '1';          // Global Privacy Control
     cb({ requestHeaders: h });
   });
@@ -350,40 +290,32 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
       if (isBlocked(details.url)) { blockedCount++; broadcast('blocked-count', blockedCount); return cb({ cancel: true }); }
       cb({});
     });
-    privSes.webRequest.onHeadersReceived((details, cb) => {
-      const h = { ...details.responseHeaders };
-      delete h['x-frame-options']; delete h['X-Frame-Options'];
-      // Strip COOP/COEP — OAuth redirects need these removed
-      delete h['cross-origin-opener-policy'];  delete h['Cross-Origin-Opener-Policy'];
-      delete h['cross-origin-embedder-policy']; delete h['Cross-Origin-Embedder-Policy'];
-      cb({ responseHeaders: h });
-    });
   }
 
-  // Strip headers that break embeds and YouTube player from ALL sessions
-  const _stripHeaders = (details, cb) => {
-    const h = { ...details.responseHeaders };
-    // These block iframes and cross-origin media loading
-    delete h['x-frame-options'];
-    delete h['X-Frame-Options'];
-    // Strip COOP/COEP that break YouTube's SharedArrayBuffer video pipeline
-    delete h['cross-origin-opener-policy'];
-    delete h['Cross-Origin-Opener-Policy'];
-    delete h['cross-origin-embedder-policy'];
-    delete h['Cross-Origin-Embedder-Policy'];
-    cb({ responseHeaders: h });
-  };
-  session.defaultSession.webRequest.onHeadersReceived(_stripHeaders);
-
-  const htmlURL = pathToFileURL(path.join(__dirname, 'src', 'index.html')).href;
+  // Preserve response policies: COOP/COEP enable cross-origin-isolated features.
+  const htmlURL = uiServer.origin + '/index.html';
+  win.webContents.on('will-navigate', (event, target) => {
+    if (new URL(target).origin !== uiServer.origin) event.preventDefault();
+  });
+  // Auth SDKs own their popup URL, state and postMessage exchange.
+  win.webContents.setWindowOpenHandler(({ url }) => ({
+    action: url === 'about:blank' || /^https:\/\//i.test(url) ? 'allow' : 'deny',
+    overrideBrowserWindowOptions: {
+      width: 520, height: 720, autoHideMenuBar: true,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload-page.js'),
+        nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
+      },
+    },
+  }));
+  win.webContents.on('did-create-window', child => child.setMenu(null));
   win.loadURL(htmlURL).catch(err => console.error('[Nova] Load error:', err));
 
   // ── Close confirmation ─────────────────────────────────────────────────────
   win.on('close', async (e) => {
     if (_cleanExit) return; // already confirmed or alt+f4 path
     e.preventDefault();
-    const ctx = windowContexts.find(c => c.mainWindow === win);
-    if (ctx) saveSession(ctx);
+    saveSession(ctx);
     try {
       const { response } = await dialog.showMessageBox(win, {
         type: 'question', buttons: ['Close Nova', 'Cancel'],
@@ -399,35 +331,25 @@ function createWindow(isPrivate = false, initialUrl = null, pos = null) {
 }
 
 // ── View layout ───────────────────────────────────────────────────────────────
-function getContentBounds(ctx, side='full') {
+function getContentBounds(ctx, side = 'full') {
   const [w, h] = ctx.mainWindow.getContentSize();
-  // In fullscreen: BrowserView fills entire window (0,0 to w,h)
-  if (ctx.mainWindow.isFullScreen()) {
-    if (side === 'left')  { const lw = Math.floor(w * (ctx.splitRatio||0.5)); return { x:0, y:0, width:lw, height:h }; }
-    if (side === 'right') { const lw = Math.floor(w * (ctx.splitRatio||0.5)); return { x:lw+4, y:0, width:w-lw-4, height:h }; }
-    return { x: 0, y: 0, width: w, height: h };
+  const fullscreen = ctx.mainWindow.isFullScreen();
+  const top = fullscreen ? 0 : (ctx.chromeHeight ?? 88) + (ctx.viewExtraTop || 0) + (ctx.panelExtraTop || 0);
+  const y = Math.min(h, Math.max(0, Math.ceil(top)));
+  const x = fullscreen ? 0 : Math.min(w, Math.max(0, ctx.verticalTabWidth || 0));
+  const width = Math.max(0, w - x - (fullscreen ? 0 : ctx.sidebarWidth || 0));
+  const height = Math.max(0, h - y - (fullscreen ? 0 : ctx.statusBarHeight ?? 22));
+  if (ctx.splitActive && side !== 'full') {
+    const gap = Math.min(4, width);
+    const leftWidth = Math.floor((width - gap) * (ctx.splitRatio ?? 0.5));
+    if (side === 'left') return { x, y, width: leftWidth, height };
+    return { x: x + leftWidth + gap, y, width: width - gap - leftWidth, height };
   }
-  // Normal mode: CRITICAL clamp so BrowserView NEVER overlaps navbar/toolbar
-  const rawTop = (ctx.chromeHeight || 88) + (ctx.viewExtraTop||0) + (ctx.panelExtraTop||0);
-  // Safety clamp: BrowserView must NEVER start above 60px
-  // If chromeHeight is 0 (not yet received), use safe default of 88px
-  const TOP = Math.max(84, rawTop || 88); // 84 = tabbar(40) + navbar(44) minimum
-  const BOT = 22; // status bar height
-  const H = Math.max(0, h - TOP - BOT);
-  if (ctx.splitActive) {
-    const ratio = ctx.splitRatio || 0.5;
-    const divW = 4;
-    const leftW = Math.floor((w - divW) * ratio);
-    const rightW = w - divW - leftW;
-    if (side === 'left')  return { x: 0,           y: TOP, width: leftW,  height: H };
-    if (side === 'right') return { x: leftW + divW, y: TOP, width: rightW, height: H };
-  }
-  const SW = ctx.sidebarWidth || 0;  // sidebar takes right edge
-  return { x: 0, y: TOP, width: Math.max(200, w - SW - (ctx.verticalTabWidth||0)), height: H };
+  return { x, y, width, height };
 }
 function repositionView(ctx) {
   // Never move BrowserView back into view while an overlay/dialog is showing
-  if (ctx._overlayOpen) return;
+  if (ctx._overlayOpen || ctx._popupOpen) return;
   if (!ctx.activeViewId) return;
   const v = ctx.views.get(ctx.activeViewId);
   if (v) v.setBounds(getContentBounds(ctx, ctx.splitActive ? 'left' : 'full'));
@@ -450,48 +372,30 @@ function sendNavState(ctx, tabId, view) {
 }
 
 // ── Create BrowserView ────────────────────────────────────────────────────────
-function createView(ctx, tabId, url) {
+function createView(ctx, tabId, url, zoom = 100) {
   const ses = ctx.isPrivate ? ctx.session : session.defaultSession;
   const view = new BrowserView({
     webPreferences: {
       preload: path.join(__dirname, 'preload-page.js'),
-      contextIsolation: false,
+      contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: false,     // YouTube CDN (googlevideo.com) needs cross-origin media
-      sandbox: false,
+      webSecurity: true,
+      sandbox: true,
       session: ses,
-      allowRunningInsecureContent: true,   // mixed-content media (some video CDNs)
-      experimentalFeatures: true,          // enables newer media APIs
-      enableBlinkFeatures: 'PictureInPicture,MediaSession', // PiP + media controls
     },
   });
+  const initialZoom = zoom > 0 && zoom <= 3 ? zoom : zoom / 100;
+  // Match Chromium's default page canvas instead of revealing Nova's placeholder.
+  view.setBackgroundColor('#ffffff');
+  view.webContents.setZoomFactor(Number.isFinite(initialZoom) && initialZoom > 0 ? Math.max(0.3, Math.min(initialZoom, 3)) : 1);
   view.webContents.setUserAgent(CHROME_UA);
   // YouTube checks session-level UA too
-  try { ses.setUserAgent(CHROME_UA, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'); } catch(e) {}
+  ses.setUserAgent(CHROME_UA);
   view.setBounds(getContentBounds(ctx));
-  view.setAutoResize({ width: true, height: true });
+  // All bounds are managed by repositionView, including split panes and overlays.
+  view.setAutoResize({ width: false, height: false });
 
   const send = (ch, d) => { if (!ctx.mainWindow.isDestroyed()) ctx.mainWindow.webContents.send(ch, d); };
-
-  // Inject UA spoof into every page (fixes Google sign-in)
-  view.webContents.on('dom-ready', async () => {
-    // 1. Spoof UA fingerprint on every page load
-    try { await view.webContents.executeJavaScript(UA_SPOOF_SCRIPT); } catch(err) {}
-    // 2. Unlock autoplay for media (YouTube, Spotify, etc.)
-    try {
-      await view.webContents.executeJavaScript(`
-        if(document.featurePolicy && !document.featurePolicy.allowsFeature('autoplay')) {
-          // Feature policy blocks autoplay — we can't override from page context
-          // but the Electron flags above should handle this
-        }
-        // YouTube bot detection: do NOT override navigator.plugins
-        // Overriding it with plain objects breaks YouTube's MimeTypeArray check
-        // and causes the video pipeline to fail with a black screen.
-      `);
-    } catch(e) {}
-
-    // Dialog interception is handled by preload-page.js (proper IPC approach)
-  });
 
   view.webContents.on('did-navigate', (e, u) => {
     const title = view.webContents.getTitle();
@@ -500,7 +404,8 @@ function createView(ctx, tabId, url) {
     if (!ctx.isPrivate && u && !u.startsWith('about:') && !u.startsWith('chrome:') && !u.startsWith('devtools:'))
       pushHistory(u, title, null, ctx.isPrivate);
   });
-  view.webContents.on('did-navigate-in-page', (e, u) => {
+  view.webContents.on('did-navigate-in-page', (e, u, isMainFrame) => {
+    if (!isMainFrame) return;
     send('tab-navigated', { tabId, url: u, title: view.webContents.getTitle() });
     sendNavState(ctx, tabId, view);
   });
@@ -515,7 +420,8 @@ function createView(ctx, tabId, url) {
   });
   view.webContents.on('did-start-loading',   ()    => send('tab-loading', { tabId, loading: true  }));
   view.webContents.on('did-stop-loading',    ()    => { send('tab-loading', { tabId, loading: false }); sendNavState(ctx, tabId, view); });
-  view.webContents.on('did-fail-load', (e, code, desc, failUrl) => {
+  view.webContents.on('did-fail-load', (e, code, desc, failUrl, isMainFrame) => {
+    if (!isMainFrame) return; // A failed embed must not replace its parent page.
     // -3 = ERR_ABORTED (user nav/redirect), 0 = no error — ignore both
     if (code === -3 || code === 0) return;
     // Don't inject on internal protocols
@@ -727,6 +633,8 @@ function createView(ctx, tabId, url) {
 // ── Show / destroy ────────────────────────────────────────────────────────────
 function showView(ctx, id) {
   ctx.views.forEach(v => ctx.mainWindow.removeBrowserView(v));
+  ctx.activeViewId = id && ctx.views.has(id) ? id : null;
+  if (ctx._overlayOpen || ctx._popupOpen) return;
   if (id && ctx.views.has(id)) {
     ctx.mainWindow.addBrowserView(ctx.views.get(id));
     ctx.activeViewId = id;
@@ -867,9 +775,9 @@ button{padding:9px 20px;border-radius:9px;border:1px solid rgba(255,255,255,.12)
 // ══════════════════════════════════════════════════════════════════════════════
 
 // Tabs
-ipcMain.on('tab-created',   (e, { tabId, url }) => {
+ipcMain.on('tab-created',   (e, { tabId, url, zoom }) => {
   const ctx = getCtx(e.sender); if (!ctx) return;
-  if (url && url !== 'nova://newtab' && isSafeURL(url)) createView(ctx, tabId, url);
+  if (url && url !== 'nova://newtab' && isSafeURL(url)) createView(ctx, tabId, url, zoom);
 });
 ipcMain.on('tab-closed',    (e, { tabId }) => { const ctx=getCtx(e.sender); if(ctx) destroyView(ctx,tabId); });
 ipcMain.on('tab-selected',  (e, { tabId, url }) => {
@@ -877,10 +785,12 @@ ipcMain.on('tab-selected',  (e, { tabId, url }) => {
   if(!url||url==='nova://newtab'||url==='about:newtab') showView(ctx,null);
   else { if(!ctx.views.has(tabId)) createView(ctx,tabId,url); showView(ctx,tabId); }
 });
-ipcMain.on('navigate', (e, { tabId, url }) => {
+ipcMain.on('navigate', (e, { tabId, url, zoom }) => {
   const ctx=getCtx(e.sender); if(!ctx) return;
+  if (!url || url === 'nova://newtab' || url === 'about:newtab') { showView(ctx, null); return; }
+  if (!isSafeURL(url)) return;
   const v=ctx.views.get(tabId);
-  if(!v) { createView(ctx,tabId,url); showView(ctx,tabId); }
+  if(!v) { createView(ctx,tabId,url,zoom); showView(ctx,tabId); }
   else {
     if(url==='about:blank'||url.startsWith('about:')||isSafeURL(url))
       v.webContents.loadURL(url).catch(()=>{});
@@ -906,30 +816,21 @@ ipcMain.on('split-open', (e, { primaryTabId, secondaryTabId }) => {
   // Create secondary view if needed
   if (!ctx.views.has(secondaryTabId)) createView(ctx, secondaryTabId, 'nova://newtab');
   repositionView(ctx);
-  // Show secondary view
-  const sv = ctx.views.get(secondaryTabId);
-  if (sv) { ctx.mainWindow.addBrowserView(sv); sv.setBounds(getContentBounds(ctx,'right')); }
+  showView(ctx, ctx.activeViewId);
 });
 ipcMain.on('split-close', (e) => {
   const ctx = getCtx(e.sender); if (!ctx) return;
   ctx.splitActive = false;
   ctx.splitSecondaryId = null;
   repositionView(ctx);
-  // Remove secondary views from window
-  ctx.mainWindow.webContents; // ensure not destroyed
-  ctx.views.forEach((v, id) => {
-    if (id !== ctx.activeViewId) ctx.mainWindow.removeBrowserView(v);
-  });
-  if (ctx.activeViewId && ctx.views.has(ctx.activeViewId)) {
-    ctx.mainWindow.addBrowserView(ctx.views.get(ctx.activeViewId));
-  }
+  showView(ctx, ctx.activeViewId);
 });
 ipcMain.on('split-resize', (e, { dx }) => {
   const ctx = getCtx(e.sender); if (!ctx || !ctx.splitActive) return;
-  const [w] = ctx.mainWindow.getContentSize();
-  const curLeftW = (w - 4) * (ctx.splitRatio || 0.5);
-  const newLeftW = Math.max(200, Math.min(w - 204, curLeftW + dx));
-  ctx.splitRatio = newLeftW / (w - 4);
+  if (!Number.isFinite(dx)) return;
+  const width = Math.max(1, getContentBounds(ctx).width - 4);
+  const curLeftW = width * (ctx.splitRatio ?? 0.5);
+  ctx.splitRatio = Math.max(0.2, Math.min(0.8, (curLeftW + dx) / width));
   repositionView(ctx);
 });
 ipcMain.on('split-navigate', (e, { url }) => {
@@ -1075,13 +976,6 @@ ipcMain.on('page-dialog', (e, { id, type, msg, defaultVal }) => {
   ctx.mainWindow.webContents.send('page-dialog-show', { id, type, msg, defaultVal, origin, tabId });
 });
 
-
-// ══════════════════════════════════════════════════════════════════════════════
-// GOOGLE OAUTH — Opens a dedicated BrowserWindow for Google sign-in
-// Avoids "requested action is invalid" from file:// redirect URIs
-// Flow: main creates a popup → loads Google OAuth → intercepts redirect →
-//       extracts ID token → sends back to renderer → signInWithCredential
-// ══════════════════════════════════════════════════════════════════════════════
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PASSKEY / WEBAUTHN — Windows Hello, Touch ID, FIDO2 security keys
@@ -1236,7 +1130,8 @@ ipcMain.handle('set-device-emulation', async (e, { device }) => {
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     if (device === 'desktop') {
       await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
-      await wc.debugger.sendCommand('Emulation.setUserAgentOverride', { userAgent: '' });
+      await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: false });
+      await wc.debugger.sendCommand('Emulation.setUserAgentOverride', { userAgent: CHROME_UA });
       wc.setUserAgent(CHROME_UA);
     } else {
       await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
@@ -1245,10 +1140,8 @@ ipcMain.handle('set-device-emulation', async (e, { device }) => {
         fitWindow: false,
       });
       await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: preset.mobile });
-      if (preset.ua) {
-        await wc.debugger.sendCommand('Emulation.setUserAgentOverride', { userAgent: preset.ua });
-        wc.setUserAgent(preset.ua);
-      }
+      await wc.debugger.sendCommand('Emulation.setUserAgentOverride', { userAgent: preset.ua || CHROME_UA });
+      wc.setUserAgent(preset.ua || CHROME_UA);
     }
     return { ok: true, device, preset };
   } catch(err) {
@@ -1592,92 +1485,68 @@ setInterval(() => { windowContexts.forEach(ctx => saveSession(ctx)); }, 30000);
 ipcMain.on('split-divider-drag', (e, { ratio }) => {
   const ctx = getCtx(e.sender); if (!ctx) return;
   ctx.splitRatio = Math.max(0.2, Math.min(0.8, ratio || 0.5));
-  const pv = ctx.views.get(ctx.activeViewId);
-  const sv = ctx.views.get(ctx.splitSecondaryId);
-  if (pv) pv.setBounds(getContentBounds(ctx, 'left'));
-  if (sv) sv.setBounds(getContentBounds(ctx, 'right'));
-});
-
-ipcMain.handle('open-google-auth', async (e) => {
-  return new Promise((resolve) => {
-    const authWin = new BrowserWindow({
-      width: 500, height: 680, title: 'Sign in with Google',
-      show: true, modal: false, center: true,
-      webPreferences: { nodeIntegration: false, contextIsolation: true },
-    });
-
-    // Build the Firebase auth URL that handles Google OAuth
-    const authUrl = 'https://nova-browser-1b7b4.firebaseapp.com/__/auth/handler?' +
-      new URLSearchParams({
-        apiKey: 'AIzaSyA3fZnbyhG6ZW7iVT1EypSadeT2aUO0Jco',
-        appName: '[DEFAULT]',
-        authType: 'signInViaPopup',
-        redirectUrl: 'https://nova-browser-1b7b4.firebaseapp.com/__/auth/handler',
-        providerId: 'google.com',
-        scopes: 'profile,email',
-        eventId: Date.now().toString(),
-        v: '10.7.1',
-      }).toString();
-
-    authWin.loadURL(authUrl);
-
-    // Intercept navigation to catch the token in the redirect
-    authWin.webContents.on('did-navigate', (ev, url) => {
-      if (url.includes('access_token') || url.includes('id_token')) {
-        try {
-          const params = new URL(url.includes('#') ? url.replace('#', '?') : url).searchParams;
-          const idToken = params.get('id_token');
-          const accessToken = params.get('access_token');
-          if (idToken || accessToken) {
-            authWin.close();
-            resolve({ idToken, accessToken });
-            return;
-          }
-        } catch {}
-      }
-      // Firebase auth handler finishes — try to extract token from page
-      if (url.includes('firebaseapp.com/__/auth/handler')) {
-        setTimeout(() => {
-          authWin.webContents.executeJavaScript(`
-            (function(){
-              try {
-                const data = JSON.parse(window.__firestoreTokens || '{}');
-                return data;
-              } catch { return null; }
-            })()
-          `).then(data => {
-            if (data?.idToken) { authWin.close(); resolve(data); }
-          }).catch(() => {});
-        }, 1500);
-      }
-    });
-
-    // If user closes the window without signing in
-    authWin.on('closed', () => resolve(null));
-
-    // Timeout after 5 minutes
-    setTimeout(() => { try { authWin.close(); } catch {} resolve(null); }, 300000);
-  });
+  repositionView(ctx);
 });
 
 // ── Dialog visibility: hide BrowserView while dialog is showing ──────────────
-// Since BrowserView is a native OS layer above ALL HTML, we must move it
-// completely below the visible area while dialogs, auth modals, etc. are showing.
-ipcMain.on('overlay-show', (e) => {
+// BrowserView surfaces sit above HTML. Hold their last painted frame under a
+// toolbar popup, without moving the page or changing its viewport and scroll.
+async function setPopupVisible(ctx, visible) {
+  if (!!ctx._popupOpen === visible) return;
+  ctx._popupOpen = visible;
+  const revision = ctx._popupRevision = (ctx._popupRevision || 0) + 1;
+  const ui = ctx.mainWindow.webContents;
+  if (!visible) {
+    showView(ctx, ctx.activeViewId);
+    ui.send('popup-frame', { revision, frames: [] });
+    return;
+  }
+  const views = ctx.mainWindow.getBrowserViews();
+  try {
+    const frames = await Promise.all(views.map(async view => ({
+      bounds: view.getBounds(),
+      image: (await view.webContents.capturePage()).toDataURL(),
+    })));
+    if (ctx.mainWindow.isDestroyed() || revision !== ctx._popupRevision) return;
+    ui.send('popup-frame', { revision, frames });
+  } catch (error) {
+    if (ctx.mainWindow.isDestroyed() || revision !== ctx._popupRevision) return;
+    setPopupVisible(ctx, false);
+    ui.send('close-browser-popups');
+  }
+}
+ipcMain.on('popup-visible', (e, { visible }) => {
+  const ctx = getCtx(e.sender);
+  if (ctx) setPopupVisible(ctx, visible === true);
+});
+ipcMain.on('popup-frame-ready', (e, { revision }) => {
+  const ctx = getCtx(e.sender);
+  if (!ctx?._popupOpen || revision !== ctx._popupRevision) return;
+  // Wait for the renderer to paint the replacement before detaching native views.
+  ctx.views.forEach(view => ctx.mainWindow.removeBrowserView(view));
+});
+
+// Full-page dialogs can hide the web surface directly.
+ipcMain.on('overlay-show', (e, { owner = 'legacy' } = {}) => {
   const ctx = getCtx(e.sender); if(!ctx) return;
+  if (!ctx._overlayOwners) ctx._overlayOwners = new Set();
+  ctx._overlayOwners.add(owner);
   ctx._overlayOpen = true;
-  // Move BrowserView completely off-screen (below the window)
+  // Detach native surfaces without changing the page viewport or scroll layout.
   ctx.views.forEach(v => {
-    try {
-      const [w, h] = ctx.mainWindow.getContentSize();
-      v.setBounds({ x: 0, y: h + 100, width: w, height: 100 });
-    } catch(err) {}
+    ctx.mainWindow.removeBrowserView(v);
   });
 });
-ipcMain.on('overlay-hide', (e) => {
+ipcMain.on('overlay-hide', (e, { owner = 'legacy' } = {}) => {
   const ctx = getCtx(e.sender); if(!ctx) return;
-  ctx._overlayOpen = false;
-  repositionView(ctx); // restore normal position
+  ctx._overlayOwners?.delete(owner);
+  ctx._overlayOpen = !!ctx._overlayOwners?.size;
+  showView(ctx, ctx.activeViewId);
+});
+
+ipcMain.handle('ai-request', (e, request) => {
+  if (!getCtx(e.sender)) throw new Error('AI requests are only available in the browser interface.');
+  return requestAI(request, (url, options) => net.fetch(url, options));
 });
 
 // ── Dialog response from renderer ────────────────────────────────────────────
@@ -1715,7 +1584,14 @@ ipcMain.on('panel-close', (e) => {
   repositionView(ctx);
 });
 ipcMain.on('resize-view',    (e, { extraTop }) => { const ctx=getCtx(e.sender); if(!ctx) return; ctx.viewExtraTop=extraTop||0; repositionView(ctx); });
-ipcMain.on('set-chrome-height', (e, { height }) => { const ctx=getCtx(e.sender); if(!ctx) return; ctx.chromeHeight=Math.max(60,Math.min(height,220)); repositionView(ctx); });
+ipcMain.on('set-chrome-height', (e, { height, left = 0, statusBarHeight = 22 }) => {
+  const ctx = getCtx(e.sender); if (!ctx) return;
+  if (![height, left, statusBarHeight].every(Number.isFinite)) return;
+  ctx.chromeHeight = Math.max(0, height);
+  ctx.verticalTabWidth = Math.max(0, left);
+  ctx.statusBarHeight = Math.max(0, statusBarHeight);
+  repositionView(ctx);
+});
 
 // Tab detach: create new window with the tab's URL
 ipcMain.on('detach-tab', (e, { url, x, y }) => {
@@ -1792,7 +1668,14 @@ ipcMain.on('find-in-page', (e,{tabId,text,forward,findNext}) => { const ctx=getC
 ipcMain.on('stop-finding', (e,{tabId}) => { const ctx=getCtx(e.sender); const v=ctx?.views.get(tabId); if(v) v.webContents.stopFindInPage('clearSelection'); });
 
 // Zoom
-ipcMain.on('set-zoom', (e,{tabId,factor}) => { const ctx=getCtx(e.sender); const v=ctx?.views.get(tabId); if(!v) return; v.webContents.setZoomFactor(factor); ctx.mainWindow.webContents.send('zoom-changed',{tabId,zoom:Math.round(factor*100)}); });
+ipcMain.on('set-zoom', (e, { tabId, factor, zoom }) => {
+  const ctx = getCtx(e.sender); const v = ctx?.views.get(tabId); if (!v) return;
+  const requested = factor ?? (zoom / 100);
+  if (!Number.isFinite(requested) || requested <= 0) return;
+  const value = Math.max(0.3, Math.min(requested, 3));
+  v.webContents.setZoomFactor(value);
+  ctx.mainWindow.webContents.send('zoom-changed', { tabId, zoom: Math.round(value * 100) });
+});
 
 // Downloads
 ipcMain.on('open-devtools', (e, { tabId }) => {
@@ -1846,12 +1729,19 @@ ipcMain.on('remove-extension', async (e, { extId, extPath }) => {
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
+  legacyPreferences = await readLegacyPreferences();
+  try {
+    uiServer = await startUIServer(__dirname, Number(process.env.NOVA_UI_PORT ?? 47531));
+  } catch (error) {
+    dialog.showErrorBox('Nova could not start', 'The local interface port is unavailable. Close the application using port 47531 and try again.');
+    app.exit(1); return;
+  }
   // Register nova:// as a privileged protocol (enables WebAuthn as a secure context)
   try {
     const { protocol } = require('electron');
     protocol.registerFileProtocol('nova', (request, callback) => {
       const url = request.url.replace('nova://', '').split('?')[0];
-      const filePath = path.join(__dirname, 'src', url === 'newtab' || url === '' ? 'index.html' : url);
+      const filePath = path.join(__dirname, url === 'newtab' || url === '' ? 'index.html' : url);
       callback({ path: filePath });
     });
   } catch(e) { /* already registered */ }
@@ -1862,11 +1752,6 @@ app.whenReady().then(async () => {
     if (details.url.toLowerCase().includes('nova-d.access')) return cb({ cancel: true });
     if (isBlocked(details.url)) { blockedCount++; broadcast('blocked-count',blockedCount); return cb({cancel:true}); }
     cb({});
-  });
-  session.defaultSession.webRequest.onHeadersReceived((details, cb) => {
-    const h = { ...details.responseHeaders };
-    delete h['x-frame-options']; delete h['X-Frame-Options'];
-    cb({ responseHeaders: h });
   });
   // Strip Electron from outgoing requests
   session.defaultSession.webRequest.onBeforeSendHeaders({ urls:['*://*/*'] }, (details, cb) => {
@@ -1899,6 +1784,8 @@ app.whenReady().then(async () => {
   }
 
   createWindow(false);
+  starting = false;
 });
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('will-quit', () => uiServer?.close());
+app.on('window-all-closed', () => { if (!starting && process.platform !== 'darwin') app.quit(); });
 app.on('activate',          () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(false); });

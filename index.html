@@ -4,7 +4,7 @@
 <meta charset="UTF-8"><title>Nova Browser</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;height:100%;overflow:hidden;font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;-webkit-user-select:none;user-select:none}
+html,body{width:100%;height:100%;overflow:hidden;font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;color:var(--txt);-webkit-user-select:none;user-select:none}
 #app{width:100%;height:100vh;display:flex;flex-direction:column;background:var(--bg);position:relative;z-index:0;isolation:isolate;}
 :root{--bg:#13131a;--surf:#1c1c27;--surf2:#22223a;--surf3:#2a2a45;--bdr:#2d2b55;--txt:#e2e8f0;--txtd:#94a3b8;--txtm:#475569;--acc:#818cf8;--acc-a:rgba(129,140,248,.18);--acc-b:rgba(129,140,248,.35);--green:#10b981;--amber:#f59e0b;--red:#ef4444}
 .private-theme{--bg:#0d0b18;--surf:#140f22;--surf2:#1a1228;--bdr:#2d1f4a;--acc:#a78bfa;--acc-a:rgba(167,139,250,.18);--acc-b:rgba(167,139,250,.35)}
@@ -495,9 +495,11 @@ html,body{width:100%;height:100%;overflow:hidden;font-family:'Segoe UI',system-u
 .vtabs #tabsrchbtn{width:100%;border-radius:7px;justify-content:flex-start;
   padding:6px 8px;gap:6px;font-size:11px;color:var(--txtm);margin-bottom:2px}
 /* Layout when vertical tabs are on */
-.vtabs #app{flex-direction:row}
-.vtabs #chrome{flex:1;display:flex;flex-direction:column;min-width:0}
-.vtabs #main{min-width:0}
+#app.vtabs{flex-direction:column}
+.vtabs #chrome{flex:0 0 auto;display:flex;flex-direction:column;min-width:0;margin-left:220px}
+.vtabs #main{min-width:0;margin-left:220px}
+.vtabs #tabbar{position:absolute;left:0;top:4px;bottom:22px;height:auto}
+.vtabs.fs-active #main{margin-left:0}
 /* Split screen divider */
 #split-divider{display:none;width:4px;background:var(--bdr);cursor:col-resize;
   flex-shrink:0;transition:background .15s;-webkit-app-region:no-drag}
@@ -1684,10 +1686,10 @@ html.theme-light .nt-card { background: #ffffff; border-color: #e2e8f0; color: #
     <div class="nova-star-icon"></div>
     <span id="ai-panel-title">Ask Nova</span>
     <select id="ai-model-sel">
-      <option value="groq-free">⚡ Groq (Free)</option>
-      <option value="together-free">🔥 Together AI (Free)</option>
-      <option value="puter-claude">🤖 Claude (Puter — needs account)</option>
-      <option value="puter-gpt4o">💬 GPT-4o (Puter — needs account)</option>
+      <option value="groq-free">⚡ Groq (API key)</option>
+      <option value="together-free">🔥 Together AI (API key)</option>
+      <option value="puter-claude">🤖 Claude (Puter — account sign-in)</option>
+      <option value="puter-gpt4o">💬 GPT-4o (Puter — account sign-in)</option>
       <option value="anthropic">Anthropic</option>
       <option value="openai">OpenAI</option>
       <option value="google">Gemini</option>
@@ -1697,6 +1699,7 @@ html.theme-light .nt-card { background: #ffffff; border-color: #e2e8f0; color: #
   </div>
   <!-- AI Toolbar -->
   <div id="ai-toolbar">
+    <button id="ai-puter-signin" hidden>Sign in to Puter</button>
     <button id="ai-clear-btn" title="Clear conversation">🗑 Clear</button>
     <button id="ai-copy-btn" title="Copy conversation">📋 Copy</button>
     <button id="ai-summarize-btn" title="Summarize current page">📄 Page</button>
@@ -2599,9 +2602,10 @@ html.theme-light .nt-card { background: #ffffff; border-color: #e2e8f0; color: #
           <div class="sp-row-label"><div class="sp-row-title">Default Model</div><div class="sp-row-desc">Which AI to use when you click "Ask Nova"</div></div>
           <div class="sp-row-ctrl">
             <select class="sp-select" id="sp-ai-provider">
-              <option value="groq-free">Groq (Free — llama3)</option>
-              <option value="puter-claude">Puter.js — Claude (Free w/ puter.com account)</option>
-              <option value="puter-gpt4o">Puter.js — GPT-4o (Free w/ puter.com account)</option>
+              <option value="groq-free">Groq (API key)</option>
+              <option value="together-free">Together AI (API key)</option>
+              <option value="puter-claude">Puter.js — Claude (Puter account)</option>
+              <option value="puter-gpt4o">Puter.js — GPT-4o (Puter account)</option>
               <option value="anthropic">Anthropic Claude (API key)</option>
               <option value="openai">OpenAI GPT (API key)</option>
               <option value="google">Google Gemini (API key)</option>
@@ -2616,7 +2620,7 @@ html.theme-light .nt-card { background: #ffffff; border-color: #e2e8f0; color: #
         </div>
       </div>
       <div class="sp-group">
-        <div style="font-size:11px;font-weight:700;color:var(--txtm);text-transform:uppercase;letter-spacing:.8px;padding:2px 0 8px">API Keys (optional — Groq and Puter.js work without keys)</div>
+        <div style="font-size:11px;font-weight:700;color:var(--txtm);text-transform:uppercase;letter-spacing:.8px;padding:2px 0 8px">Provider API keys — Puter uses account sign-in instead</div>
         <div class="sp-row" style="flex-direction:column;align-items:flex-start;gap:6px;padding:10px 0">
           <div style="display:flex;width:100%;align-items:center;gap:6px">
             <span style="font-size:13px;min-width:20px">🤖</span>
@@ -2664,7 +2668,7 @@ html.theme-light .nt-card { background: #ffffff; border-color: #e2e8f0; color: #
         <div class="sp-row" style="flex-direction:column;align-items:flex-start;gap:6px;padding:10px 0">
           <div style="display:flex;width:100%;align-items:center;gap:6px">
             <span style="font-size:13px;min-width:20px">🔥</span>
-            <div class="sp-row-label" style="flex:1"><div class="sp-row-title">Together AI (Free tier)</div><div class="sp-row-desc">Free signup at together.ai — Llama 3.3 70B, no credit card</div></div>
+            <div class="sp-row-label" style="flex:1"><div class="sp-row-title">Together AI</div><div class="sp-row-desc">API key and a model ID from your Together account are required</div></div>
           </div>
           <div style="display:flex;gap:6px;width:100%;padding-left:26px">
             <input type="password" id="ai-key-together" placeholder="together-…" autocomplete="off" spellcheck="false" style="-webkit-user-select:text;user-select:text;flex:1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:6px;padding:6px 10px;color:var(--txt);font-size:11px;font-family:'Cascadia Code',monospace;outline:none">
@@ -2675,7 +2679,7 @@ html.theme-light .nt-card { background: #ffffff; border-color: #e2e8f0; color: #
         <div class="sp-row" style="flex-direction:column;align-items:flex-start;gap:6px;padding:10px 0">
           <div style="display:flex;width:100%;align-items:center;gap:6px">
             <span style="font-size:13px;min-width:20px">⚡</span>
-            <div class="sp-row-label" style="flex:1"><div class="sp-row-title">Groq API Key (optional)</div><div class="sp-row-desc">Works free without key — key gives higher limits</div></div>
+            <div class="sp-row-label" style="flex:1"><div class="sp-row-title">Groq API Key</div><div class="sp-row-desc">A Groq API key is required to send messages</div></div>
           </div>
           <div style="display:flex;gap:6px;width:100%;padding-left:26px">
             <input type="password" id="ai-key-groq" placeholder="gsk_…" autocomplete="off" spellcheck="false" style="-webkit-user-select:text;user-select:text;flex:1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:6px;padding:6px 10px;color:var(--txt);font-size:11px;font-family:'Cascadia Code',monospace;outline:none">
@@ -2733,10 +2737,10 @@ html.theme-light .nt-card { background: #ffffff; border-color: #e2e8f0; color: #
           <div class="sp-row-icon"><svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="5.5"/><path d="M4.5 7h5M7 4.5v5" stroke-linecap="round"/></svg></div>
           <div class="sp-row-label"><div class="sp-row-title">Page Zoom</div><div class="sp-row-desc">Default zoom level for all pages</div></div>
           <div class="sp-row-ctrl">
-            <select class="sp-select" id="sp-default-zoom">
-              <option value="0.75">75%</option><option value="0.9">90%</option>
-              <option value="1" selected>100%</option><option value="1.1">110%</option>
-              <option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option>
+            <select class="sp-select" id="sp-default-zoom-accessibility">
+              <option value="75">75%</option><option value="90">90%</option>
+              <option value="100" selected>100%</option><option value="110.00000000000001">110%</option>
+              <option value="125">125%</option><option value="150">150%</option><option value="200">200%</option>
             </select>
           </div>
         </div>
@@ -3200,6 +3204,7 @@ html.theme-light .nt-card { background: #ffffff; border-color: #e2e8f0; color: #
   </div>
 </div>
 
+<script src="i18n.js"></script>
 <!-- Firebase SDK -->
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
@@ -3211,6 +3216,59 @@ html.theme-light .nt-card { background: #ffffff; border-color: #e2e8f0; color: #
 const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
 const bridge=window.novaBridge||null;
+// Native page surfaces cannot be covered by HTML. Keep a painted preview at
+// exactly the same coordinates while a toolbar popup has focus.
+const browserPopupSelector = '.panel.show, #dotsmenu.show, #sugg.show, #siteinfo.show, #tabctx.show, #tabsearch.show';
+let browserPopupVisible = false;
+let popupFrameRevision = 0;
+const popupFrameLayer = document.createElement('div');
+popupFrameLayer.id = 'browser-popup-frame';
+popupFrameLayer.style.cssText = 'position:fixed;inset:0;z-index:25;pointer-events:none';
+document.getElementById('app').appendChild(popupFrameLayer);
+function syncBrowserPopups(){
+  const visible = !!document.querySelector(browserPopupSelector);
+  if (visible === browserPopupVisible) return;
+  browserPopupVisible = visible;
+  bridge?.setPopupVisible(visible);
+}
+function closeBrowserPopups(){
+  closePanels(); closeSiteInfo(); hideTabCtx(); hideTabSearch();
+  document.getElementById('sugg')?.classList.remove('show');
+  syncBrowserPopups();
+}
+new MutationObserver(syncBrowserPopups).observe(document.getElementById('app'), {
+  subtree:true, childList:true, attributes:true, attributeFilter:['class']
+});
+bridge?.onClosePopups(closeBrowserPopups);
+bridge?.onPopupFrame(async ({revision, frames}) => {
+  if (revision < popupFrameRevision) return;
+  popupFrameRevision = revision;
+  if (!frames.length) { popupFrameLayer.replaceChildren(); return; }
+  if (!browserPopupVisible) return;
+  let images;
+  try {
+    images = await Promise.all(frames.map(async frame => {
+    const image = new Image();
+    image.alt = '';
+    image.draggable = false;
+    const {x,y,width,height} = frame.bounds;
+    image.style.cssText = 'position:absolute;pointer-events:auto;object-fit:fill;background:#fff;left:'+x+'px;top:'+y+'px;width:'+width+'px;height:'+height+'px';
+    image.addEventListener('click', closeBrowserPopups);
+    image.src = frame.image;
+    await image.decode();
+    return image;
+    }));
+  } catch {
+    if (revision === popupFrameRevision) closeBrowserPopups();
+    return;
+  }
+  if (!browserPopupVisible || revision !== popupFrameRevision) return;
+  popupFrameLayer.replaceChildren(...images);
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (browserPopupVisible && revision === popupFrameRevision) bridge?.popupFrameReady(revision);
+  }));
+});
+
 if(bridge)console.log('[Nova] Bridge OK');else console.warn('[Nova] No bridge');
 
 // ── Firebase ──────────────────────────────────────────────────────────────────
@@ -3304,13 +3362,17 @@ let findOpen=false,openPanel=null,bkShown=false;
 
 // ── Chrome height measurement ─────────────────────────────────────────────────
 // Tells main.js where the BrowserView should start — fixes toolbar button clicks
+function getChromeBottom(){
+  return Math.ceil(Math.max(document.getElementById('navbar')?.getBoundingClientRect().bottom || 0,
+    document.getElementById('bkbar')?.getBoundingClientRect().bottom || 0));
+}
 function sendChromeHeight(){
-  // Measure the TOTAL chrome height: tabbar + navbar + optional bookmarks bar
-  const tabH  = document.getElementById('tabbar')?.offsetHeight  || 40;
-  const navH  = document.getElementById('navbar')?.offsetHeight  || 44;
-  const bkH   = bkShown ? (document.getElementById('bkbar')?.offsetHeight || 26) : 0;
-  const total = tabH + navH + bkH;
-  bridge?.setChromeHeight({height: total});
+  // Measure actual edges, including the drag strip, compact mode and vertical tabs.
+  const nav = document.getElementById('navbar')?.getBoundingClientRect();
+  const bookmarks = document.getElementById('bkbar')?.getBoundingClientRect();
+  const status = document.getElementById('statusbar')?.getBoundingClientRect();
+  const height = Math.ceil(Math.max(nav?.bottom || 0, bookmarks?.bottom || 0));
+  bridge?.setChromeHeight({ height, left: Math.ceil(nav?.left || 0), statusBarHeight: Math.ceil(status?.height || 0) });
 }
 
 // ResizeObserver: fire sendChromeHeight the INSTANT chrome layout changes
@@ -3404,10 +3466,10 @@ function addTab(url='nova://newtab',isPrivate=false){
   const priv=isPrivate||isPrivateWindow;
   url = normaliseNovaURL(url);           // normalise nova//new-tab/ etc.
   const isNT = url==='nova://newtab';
-  tabs.push({id,url,title:isNT?'New Tab':url,faviconUrl:null,loading:false,
+  tabs.push({id,url,title:isNT?window.novaI18n.t('New Tab'):url,faviconUrl:null,loading:false,
     canGoBack:false,canGoForward:false,zoom:100,isPrivate:priv,
     pinned:false,muted:false,group:'',audible:false,readerMode:false});
-  if(bridge&&!isNT)bridge.tabCreated({tabId:id,url});
+  if(bridge&&!isNT)bridge.tabCreated({tabId:id,url, zoom: Number(localStorage.getItem('novaDefaultZoom') || 100)});
   selectTab(id);
 }
 
@@ -3444,8 +3506,8 @@ function selectTab(id){
   document.getElementById('ph')?.classList.toggle('show',!isNT);
   if(!isNT){const _pht2=document.getElementById('phtitle');if(_pht2)_pht2.textContent=t.title||t.url; { const _g=document.getElementById('phurl'); if(_g) _g.textContent=t.url; }}
   const ui=document.getElementById('urlinput');
-  ui.value=isNT?'':t.url; ui.placeholder=isNT?`Search with ${engine} or enter URL…`:t.url;
-  if(isNT){const nti=document.getElementById('nti');if(nti){nti.placeholder=`Search with ${engine} or enter URL…`;requestAnimationFrame(()=>setTimeout(()=>{if(document.getElementById('nt')?.style.display!=='none')nti.focus();},150));}}
+  ui.value=isNT?'':t.url; ui.placeholder=isNT?window.novaI18n.t('Search with {engine} or enter URL…',{engine}):t.url;
+  if(isNT){const nti=document.getElementById('nti');if(nti){nti.placeholder=window.novaI18n.t('Search with {engine} or enter URL…',{engine});requestAnimationFrame(()=>setTimeout(()=>{if(document.getElementById('nt')?.style.display!=='none')nti.focus();},150));}}
   { const _d=document.getElementById('bbtn'); if(_d) _d.disabled=!t?.canGoBack; }
   { const _d=document.getElementById('fbtn'); if(_d) _d.disabled=!t?.canGoForward; }
   updateRbtn(t?.loading);
@@ -3460,8 +3522,7 @@ function navTo(url){
   const t=curTab(); if(!t)return;
   url = normaliseNovaURL(url);           // handle nova//new-tab/ etc.
   const isNT = url==='nova://newtab';
-  const wasNT = t.url==='nova://newtab';
-  t.url=url; t.title=isNT?'New Tab':url; t.readerMode=false;
+  t.url=url; t.title=isNT?window.novaI18n.t('New Tab'):url; t.readerMode=false;
   if(isNT){
     // Going to new tab: show NTP, tell main to hide BrowserView
     if(bridge)bridge.navigate({tabId:t.id,url:'nova://newtab'});
@@ -3469,14 +3530,13 @@ function navTo(url){
     document.getElementById('ph')?.classList.remove('show');
     document.getElementById('ph')?.classList.add('hide-ph');
     const _ui0=document.getElementById('urlinput');if(_ui0)_ui0.value='';
-    document.getElementById('urlinput').placeholder=`Search with ${engine} or enter URL…`;
+    document.getElementById('urlinput').placeholder=window.novaI18n.t('Search with {engine} or enter URL…',{engine});
     const _su0=document.getElementById('surl');if(_su0)_su0.textContent='nova://newtab';
     updateBkStar(null); updateLockIcon('nova://newtab'); updateRdrLbl(false);
     renderTabs(); return;
   }
   if(bridge){
-    if(wasNT){bridge.tabCreated({tabId:t.id,url});bridge.tabSelected({tabId:t.id,url});}
-    else bridge.navigate({tabId:t.id,url});
+    bridge.navigate({tabId:t.id,url,zoom:Number(localStorage.getItem('novaDefaultZoom') || 100)});
   }
   document.getElementById('nt')?.classList.add('hide');
   document.getElementById('ph')?.classList.add('show');
@@ -3706,10 +3766,9 @@ async function showSiteInfo(){
 
   pop.classList.add('show');
   siOpen = true;
-  bridge?.overlayShow();
   closePanels();
 }
-function closeSiteInfo(){document.getElementById('siteinfo')?.classList.remove('show');siOpen=false;bridge?.overlayHide();}
+function closeSiteInfo(){document.getElementById('siteinfo')?.classList.remove('show');siOpen=false;}
 
 // ── Panels ────────────────────────────────────────────────────────────────────
 function closePanels(){
@@ -3732,22 +3791,7 @@ function togglePanel(pid,bid){
     if(pid==='histpanel')renderHistPanel();
     if(pid==='dlpanel')  renderDLPanel();
     if(pid==='extpanel') renderExtPanel();
-    // Push BrowserView below the open panel bottom — prevents it swallowing clicks
-    // Use 60ms delay to ensure the panel has rendered and getBoundingClientRect is accurate
-    // Push BrowserView below the panel bottom
-    // We wait 80ms for the panel to render, then measure its actual bottom edge
-    setTimeout(()=>{
-      const el=document.getElementById(pid);
-      if(el && bridge){
-        const r   = el.getBoundingClientRect();
-        const chrH= (document.getElementById('tabbar')?.offsetHeight||40)
-                  + (document.getElementById('navbar')?.offsetHeight||44)
-                  + (bkShown ? (document.getElementById('bkbar')?.offsetHeight||0) : 0);
-        // extraTop = how far the panel extends BELOW the chrome
-        const extraTop = Math.max(0, Math.round(r.bottom) - chrH + 8);
-        bridge.resizeView({extraTop});
-      }
-    }, 80);
+
   }
 }
 function animBars(){
@@ -3965,16 +4009,7 @@ async function buildSugg(q){
   const seen=new Set(); rows=rows.filter(r=>{if(seen.has(r.u))return false;seen.add(r.u);return true;});
   _renderSuggRows(rows.slice(0,8),box);
 }
-function _suggPushView(show,boxEl){
-  if(!bridge)return;
-  if(show&&boxEl){
-    // Push the BrowserView below the suggestions dropdown
-    const rect=boxEl.getBoundingClientRect();
-    bridge.resizeView({extraTop:Math.max(0,Math.round(rect.bottom)-88+10)});
-  }else{
-    if(!openPanel&&!findOpen)bridge.resizeView({extraTop:0});
-  }
-}
+function _suggPushView(){ syncBrowserPopups(); }
 function _renderSuggRows(rows,box){
   box.innerHTML='';
   rows.forEach(r=>{
@@ -4375,56 +4410,34 @@ async function submitAuth(){
   }finally{btn.disabled=false;}
 }
 async function signInGoogle(){
-  if(!auth){showAuthErr('Auth not available');return;}
-  // ── Electron Google OAuth via in-app popup window ─────────────────────
-  // Opens a dedicated Electron window that loads Google's OAuth page.
-  // main.js intercepts the redirect and sends the ID token back here.
-  // This avoids the "requested action is invalid" error from file:// redirects.
-  try{
-    showAuthErr('Opening Google sign-in window…');
+  if (!auth) { showAuthErr('Authentication is unavailable. Check your connection and try again.'); return; }
+  const button = document.getElementById('authgoogle');
+  button.disabled = true;
+  clearAuthErr();
+  try {
     const provider = new firebase.auth.GoogleAuthProvider();
     provider.addScope('profile'); provider.addScope('email');
     provider.setCustomParameters({prompt:'select_account'});
-
-    // Request main process to open an OAuth popup window
-    const tokenResult = await bridge?.openGoogleAuth?.();
-    if(tokenResult?.idToken){
-      // Use the ID token returned from the popup window
-      const cred = firebase.auth.GoogleAuthProvider.credential(tokenResult.idToken);
-      const result = await auth.signInWithCredential(cred);
-      if(result.additionalUserInfo?.isNewUser){
-        _isNewUser=true;
-        await _saveUserData(result.user.uid,{
-          displayName:result.user.displayName||'Nova User',
-          email:result.user.email, photoURL:result.user.photoURL||null,
-          createdAt:new Date().toISOString(), accentColor:'#818cf8', bookmarks:[]
-        });
-      }
-      clearAuthErr(); hideAuthModal();
-      return;
-    }
-
-    // Fallback: try signInWithPopup (works if Firebase project has localhost authorized)
+    auth.languageCode = document.documentElement.lang || 'en';
     const result = await auth.signInWithPopup(provider);
-    if(result.additionalUserInfo?.isNewUser){
-      _isNewUser=true;
-      await _saveUserData(result.user.uid,{
-        displayName:result.user.displayName||'Nova User',
-        email:result.user.email, photoURL:result.user.photoURL||null,
-        createdAt:new Date().toISOString(), accentColor:'#818cf8', bookmarks:[]
+    if (result.additionalUserInfo?.isNewUser) {
+      _isNewUser = true;
+      await _saveUserData(result.user.uid, {
+        displayName:result.user.displayName || 'Nova User', email:result.user.email,
+        photoURL:result.user.photoURL || null, createdAt:new Date().toISOString(),
+        accentColor:'#818cf8', bookmarks:[]
       });
     }
     clearAuthErr(); hideAuthModal();
-
-  }catch(e){
-    if(e.code==='auth/popup-blocked'||e.code==='auth/popup-closed-by-user'||e.message==='popup-blocked'){
-      // Final fallback: system browser
-      bridge?.openExternal({url:'https://accounts.google.com/o/oauth2/v2/auth?client_id=542561695053-web.apps.googleusercontent.com&redirect_uri=urn:ietf:wg:oauth:2.0:oob&response_type=code&scope=openid+email+profile&prompt=select_account'});
-      showAuthErr('Opened in your browser. Copy the code and paste it below, then sign in with email + password instead.');
-    } else {
-      showAuthErr(e.message||'Google sign-in failed. Please use email/password sign-in.');
-    }
-  }
+  } catch (error) {
+    const errors = {
+      'auth/unauthorized-domain':'Google sign-in needs localhost in Firebase Authentication → Settings → Authorized domains. Ask the Nova project administrator to add it.',
+      'auth/popup-closed-by-user':'Google sign-in was cancelled. You can try again.',
+      'auth/popup-blocked':'The sign-in window could not open. Try again.',
+      'auth/operation-not-allowed':'Enable Google in the Firebase project’s Authentication sign-in providers.'
+    };
+    showAuthErr(errors[error.code] || error.message || 'Google sign-in failed. Please try again.');
+  } finally { button.disabled = false; }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -4515,14 +4528,7 @@ document.getElementById('dotsbtn').addEventListener('click',e=>{
     menu.classList.add('show');
     document.getElementById('dotsbtn')?.classList.add('on');
     const zv=document.getElementById('dm-zoom-val');if(zv)zv.textContent=Math.round((currentZoom||1)*100)+'%';
-    // Push BrowserView down so menu is not covered
-    setTimeout(()=>{
-      const mr=menu.getBoundingClientRect();
-      if(bridge){
-        const chrH=(document.getElementById('tabbar')?.offsetHeight||40)+(document.getElementById('navbar')?.offsetHeight||44);
-        bridge.resizeView({extraTop: Math.max(0, Math.round(mr.bottom) - chrH + 8)});
-      }
-    }, 80);
+
   }
 });
 document.getElementById('dm-find').addEventListener('click',()=>{closePanels();openFind();});
@@ -4663,14 +4669,14 @@ function openSettings(section){
   const pg=document.getElementById('settings-page');
   if(pg) pg.classList.add('show');
   settingsOpen=true;
-  bridge?.overlayShow(); // Settings is full-page — BrowserView must move below it
+  bridge?.overlayShow('settings');
   if(section) spNavTo(section);
 }
 function closeSettings(){
   const pg=document.getElementById('settings-page');
   if(pg) pg.classList.remove('show');
   settingsOpen=false;
-  bridge?.overlayHide();
+  bridge?.overlayHide('settings');
 }
 function spNavTo(id){
   document.querySelectorAll('.sp-nav-item').forEach(el=>el.classList.toggle('on',el.dataset.sp===id));
@@ -4683,6 +4689,8 @@ if(bridge){
 
   openSettings=function(section){
     settingsOpen=true;
+    bridge.overlayShow('settings');
+    closeBrowserPopups();
     const pg=document.getElementById('settings-page');
     pg.classList.add('show');
     // Sync state → controls
@@ -4699,6 +4707,7 @@ if(bridge){
   closeSettings=function(){
     settingsOpen=false;
     document.getElementById('settings-page')?.classList.remove('show');
+    bridge.overlayHide('settings');
   };
 
   spNavTo=function(id){
@@ -5023,13 +5032,6 @@ const bkEl=document.getElementById('sp-bkbar');if(bkEl)bkEl.checked=bkShown;
   });
 
   // Accessibility settings
-  document.getElementById('sp-default-zoom')?.addEventListener('change', e=>{
-    changeZoom(0, true);
-    const z = parseFloat(e.target.value);
-    bridge?.setZoom({tabId:activeId, factor:z});
-    currentZoom = z;
-    try{localStorage.setItem('novaDefaultZoom', z);}catch(err){}
-  });
   document.getElementById('sp-reduce-motion')?.addEventListener('change', e=>{
     document.documentElement.classList.toggle('reduce-motion', e.target.checked);
     try{localStorage.setItem('novaReduceMotion', e.target.checked?'1':'0');}catch(err){}
@@ -5068,99 +5070,14 @@ Note: This imports bookmarks stored in your ${browser} profile.`);
     });
   })();
 
-  // Languages
-  // ── Full UI translation system ─────────────────────────────────────────
-  const NOVA_STRINGS = {
-    en: { search:'Search or enter an address…', newtab:'Search or enter a URL…',
-          settings:'Settings', history:'History', downloads:'Downloads',
-          bookmarks:'Bookmarks', newTab:'New Tab', close:'Close',
-          back:'Back', forward:'Forward', reload:'Reload', home:'Home',
-          find:'Find in Page', zoom:'Zoom', print:'Print', save:'Save Page As…',
-          devtools:'Developer Tools', clearData:'Clear Browsing Data',
-          privacy:'Privacy Dashboard', collections:'Collections',
-          readAloud:'Read Aloud', readerMode:'Reader Mode',
-          splitScreen:'Split Screen', screenshot:'Screenshot' },
-    fr: { search:'Rechercher ou saisir une adresse…', newtab:'Rechercher ou saisir une URL…',
-          settings:'Paramètres', history:'Historique', downloads:'Téléchargements',
-          bookmarks:'Favoris', newTab:'Nouvel onglet', close:'Fermer',
-          back:'Retour', forward:'Avancer', reload:'Recharger', home:'Accueil',
-          find:'Rechercher dans la page', zoom:'Zoom', print:'Imprimer', save:'Enregistrer…',
-          devtools:'Outils de développement', clearData:'Effacer les données',
-          privacy:'Tableau de confidentialité', collections:'Collections',
-          readAloud:'Lire à voix haute', readerMode:'Mode lecture',
-          splitScreen:'Écran partagé', screenshot:"Capture d'écran" },
-    es: { search:'Buscar o introducir una dirección…', newtab:'Buscar o introducir una URL…',
-          settings:'Configuración', history:'Historial', downloads:'Descargas',
-          bookmarks:'Marcadores', newTab:'Nueva pestaña', close:'Cerrar',
-          back:'Atrás', forward:'Adelante', reload:'Recargar', home:'Inicio' },
-    de: { search:'Suchen oder Adresse eingeben…', newtab:'Suchen oder URL eingeben…',
-          settings:'Einstellungen', history:'Verlauf', downloads:'Downloads',
-          bookmarks:'Lesezeichen', newTab:'Neuer Tab', close:'Schließen',
-          back:'Zurück', forward:'Vorwärts', reload:'Neu laden', home:'Startseite' },
-    ja: { search:'検索または URL を入力…', newtab:'検索または URL を入力…',
-          settings:'設定', history:'履歴', downloads:'ダウンロード',
-          bookmarks:'ブックマーク', newTab:'新しいタブ', close:'閉じる',
-          back:'戻る', forward:'進む', reload:'再読み込み', home:'ホーム' },
-    pt: { search:'Pesquisar ou inserir endereço…', newtab:'Pesquisar ou inserir URL…',
-          settings:'Configurações', history:'Histórico', downloads:'Downloads',
-          bookmarks:'Favoritos', newTab:'Nova aba', close:'Fechar',
-          back:'Voltar', forward:'Avançar', reload:'Recarregar', home:'Início' },
-  };
-
-  function applyLanguage(lang) {
-    try{localStorage.setItem('novaBrowserLang', lang);}catch(e){}
-    document.documentElement.lang = lang;
-    const t = NOVA_STRINGS[lang] || NOVA_STRINGS.en;
-    // Update placeholders
-    const ui = document.getElementById('urlinput'); if(ui) ui.placeholder = t.search;
-    const nti = document.getElementById('nti');     if(nti) nti.placeholder = t.newtab;
-    // Update title attributes (tooltips) on nav buttons
-    const tooltips = {
-      bbtn:t.back, fbtn:t.forward, rbtn:t.reload, homebtn:t.home,
-      histbtn:t.history, dlbtn:t.downloads, starbtn:t.bookmarks,
-      dotsbtn:t.settings,
-    };
-    Object.entries(tooltips).forEach(([id,tip])=>{
-      const el=document.getElementById(id); if(el) el.title=tip;
-    });
-    // Update dots menu labels
-    const menuMap = {
-      'dm-find':t.find, 'dm-history':t.history, 'dm-downloads':t.downloads,
-      'dm-settings':t.settings, 'dm-readaloud':t.readAloud,
-      'dm-reader':t.readerMode, 'dm-split':t.splitScreen, 'dm-shot':t.screenshot,
-    };
-    Object.entries(menuMap).forEach(([id,label])=>{
-      const el=document.getElementById(id)?.querySelector('.dmi-label');
-      if(el) el.textContent=label;
-    });
-  }
-
-  document.getElementById('sp-browser-lang')?.addEventListener('change', e=>{
-    applyLanguage(e.target.value);
-    novaAlert(NOVA_STRINGS[e.target.value]
-      ? 'Language applied successfully! Some static UI elements will update on next restart.'
-      : 'Language changed.');
+  document.getElementById('sp-browser-lang')?.addEventListener('change', event => {
+    window.novaI18n.setLanguage(event.target.value);
   });
-
-  // Apply saved language on load
-  (function(){
-    try{
-      const saved=localStorage.getItem('novaBrowserLang');
-      if(saved && NOVA_STRINGS[saved]){
-        const el=document.getElementById('sp-browser-lang');
-        if(el) el.value=saved;
-        document.documentElement.lang=saved;
-        applyLanguage(saved);
-      }
-    }catch(e){}
-  })();
-  // Restore saved language on settings open
-  (function(){
-    try{
-      const saved = localStorage.getItem('novaBrowserLang');
-      if(saved){ const el = document.getElementById('sp-browser-lang'); if(el) el.value = saved; document.documentElement.lang = saved; }
-    }catch(e){}
-  })();
+  window.addEventListener('nova-language-change', () => {
+    if (auth) auth.languageCode = document.documentElement.lang;
+    tabs.filter(tab => tab.url === 'nova://newtab').forEach(tab => { tab.title = window.novaI18n.t('New Tab'); });
+    renderTabs();
+  });
 
   // Languages — spell check toggle
   document.getElementById('sp-spellcheck')?.addEventListener('change', e=>{
@@ -5195,7 +5112,7 @@ Note: This imports bookmarks stored in your ${browser} profile.`);
   bridge.onInit(({date,bookmarks,history,blocked,isPrivate,extensions,initialUrl,appVersion})=>{
   if(appVersion) NOVA_CURRENT_VERSION=appVersion;
     // Update NTP date/time display in header
-    if(date){const _ntt=document.getElementById('nt-title');if(_ntt)_ntt.textContent=date;}
+    if(date){const _ntt=document.getElementById('nt-title');if(_ntt)_ntt.textContent=new Intl.DateTimeFormat(document.documentElement.lang,{weekday:'long',month:'long',day:'numeric'}).format(new Date());}
     bookmarksData=bookmarks||[]; historyData=history||[];
     blockedCount=blocked||0; extensionsData=extensions||[];
     isPrivateWindow=!!isPrivate;
@@ -6099,7 +6016,7 @@ if (memorySaverOn) {
 // ════════════════════════════════════════════════════════════════════════════
 // AUTO-UPDATER  — checks Updater.json on every launch
 // ════════════════════════════════════════════════════════════════════════════
-const NOVA_CURRENT_VERSION = '1.1.0';
+let NOVA_CURRENT_VERSION = '1.1.0';
 const UPDATER_URL = 'https://raw.githubusercontent.com/Gabrieldevgit/Nova-browser/main/Updater.json';
 
 var _updateInfo = null;
@@ -7415,19 +7332,6 @@ var _aiHistory = []; // {role, content}
 var _aiTyping  = false;
 
 // ── API Key storage ─────────────────────────────────────────────────────────
-function getAIKey(provider) {
-  try { return localStorage.getItem('novaAIKey_' + provider) || ''; } catch(e) { return ''; }
-}
-function saveAIKey(provider) {
-  const inp = document.getElementById('ai-key-' + provider);
-  if (!inp) return;
-  const val = inp.value.trim();
-  try {
-    if (val) localStorage.setItem('novaAIKey_' + provider, val);
-    else localStorage.removeItem('novaAIKey_' + provider);
-    novaAlert(val ? '✅ API key saved for ' + provider : 'Key removed for ' + provider, 'AI Settings');
-  } catch(e) {}
-}
 function clearAllAIKeys() {
   novaConfirm('Remove all stored AI keys?', 'AI Settings').then(ok => {
     if (!ok) return;
@@ -7454,12 +7358,12 @@ async function testAIKey(provider) {
 }
 
 // Restore saved API keys to input fields
-function _restoreAIKeyInputs() {
-  ['anthropic','openai','google','groq','openrouter','together'].forEach(p => {
-    const k = getAIKey(p);
+async function _restoreAIKeyInputs() {
+  await Promise.all(['anthropic','openai','google','groq','openrouter','together'].map(async p => {
+    const k = await getAIKey(p);
     const inp = document.getElementById('ai-key-' + p);
-    if (inp && k) inp.value = k;
-  });
+    if (inp) inp.value = k;
+  }));
 }
 
 // ── Open/Close AI Panel ─────────────────────────────────────────────────────
@@ -7468,7 +7372,6 @@ function openAI() {
   if (!panel) return;
   panel.classList.add('open');
   _aiOpen = true;
-  bridge?.overlayShow();
   bridge?.resizeSidebar?.({ sidebarWidth: 360 });
   _aiUpdateContextBar();
   setTimeout(() => document.getElementById('ai-input')?.focus(), 200);
@@ -7478,7 +7381,6 @@ function closeAI() {
   if (!panel) return;
   panel.classList.remove('open');
   _aiOpen = false;
-  bridge?.overlayHide();
   bridge?.resizeSidebar?.({ sidebarWidth: 0 });
 }
 function toggleAI() {
@@ -7494,7 +7396,7 @@ function _aiUpdateContextBar() {
   if (includeCtx && t && t.url && t.url !== 'nova://newtab') {
     wrap.innerHTML = `<div class="ai-context-bar">
       <div class="nova-star-icon" style="width:11px;height:11px;flex-shrink:0"></div>
-      <span title="${t.url}">${t.title || t.url}</span>
+      <span title="${esc(t.url)}">${esc(t.title || t.url)}</span>
       <button class="ai-context-clear" onclick="_aiClearContext()" title="Don't include page">✕</button>
     </div>`;
   } else {
@@ -7508,107 +7410,118 @@ function _aiClearContext() {
 }
 
 // ── Provider routing ─────────────────────────────────────────────────────────
+const AI_DEFAULT_MODELS = {
+  groq:'llama-3.3-70b-versatile', anthropic:'claude-sonnet-4-5', openai:'gpt-4.1',
+  google:'gemini-2.0-flash', openrouter:'anthropic/claude-3.5-sonnet', together:''
+};
+function _aiModel(provider) {
+  const model = (localStorage.getItem('novaAIModel_' + provider) || AI_DEFAULT_MODELS[provider] || '').trim();
+  if (!model) throw new Error('Choose a model ID for ' + provider + ' in Settings → AI Assistant. Provider billing applies.');
+  return model;
+}
 async function _aiCallProvider(provider, messages) {
-  switch(provider) {
-    case 'groq-free': return await _aiGroq(messages);
-    case 'puter-claude': return await _aiPuter(messages, 'claude-3-5-sonnet');
-    case 'puter-gpt4o': return await _aiPuter(messages, 'gpt-4o');
-    case 'anthropic':   return await _aiAnthropic(messages);
-    case 'openai':      return await _aiOpenAI(messages);
-    case 'google':      return await _aiGoogle(messages);
-    case 'openrouter':  return await _aiOpenRouter(messages);
-    default:            return await _aiGroq(messages);
-  }
+  const providers = {
+    groq:_aiGroq, 'groq-free':_aiGroq, together:_aiTogether, 'together-free':_aiTogether,
+    anthropic:_aiAnthropic, openai:_aiOpenAI, google:_aiGoogle, openrouter:_aiOpenRouter,
+    'puter-claude':m => _aiPuter(m, 'claude-3-5-sonnet'),
+    'puter-gpt4o':m => _aiPuter(m, 'gpt-4o')
+  };
+  if (!providers[provider]) throw new Error('Select an AI provider in Settings → AI Assistant.');
+  const reply = await providers[provider](messages);
+  if (typeof reply !== 'string' || !reply.trim()) throw new Error('The AI provider returned no text. Try again or choose another model in AI Settings.');
+  return reply;
 }
 
-// ── Groq (free, no key needed) ───────────────────────────────────────────────
+async function _aiFetch(url, options) {
+  if (!bridge?.aiRequest) throw new Error('AI requires the Nova desktop app. Restart Nova and try again.');
+  const response = await bridge.aiRequest({url, headers:options.headers, body:options.body});
+  return {ok:response.ok, status:response.status, json:async () => response.data};
+}
+
+// ── Groq ───────────────────────────────────────────────────────────────────
 async function _aiGroq(messages) {
   const key = await getAIKey('groq');
-  // Groq requires a real API key — get yours free at console.groq.com
-  if (!key) {
-    throw new Error(
-      'Groq requires a free API key.\n\n' +
-      'Get yours in 30 seconds at: console.groq.com\n' +
-      '(free, no credit card — just sign up)\n\n' +
-      'Then add it in Settings → AI Assistant → Groq API Key.'
-    );
-  }
-  const GROQ_MODELS = ['llama-3.3-70b-versatile','llama3-70b-8192','mixtral-8x7b-32768'];
-  let lastErr;
-  for (const model of GROQ_MODELS) {
-    try {
-      const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-        body: JSON.stringify({ model, messages, max_tokens: 2048, temperature: 0.7 })
-      });
-      if (!r.ok) {
-        const e = await r.json().catch(()=>({}));
-        const msg = e?.error?.message || 'HTTP ' + r.status;
-        if (r.status === 401) throw new Error('Invalid Groq API key. Check Settings → AI Assistant.');
-        throw new Error(msg);
-      }
-      const d = await r.json();
-      return d.choices?.[0]?.message?.content || '';
-    } catch(e) { lastErr = e; if (e.message.includes('Invalid') || e.message.includes('key')) throw e; }
-  }
-  throw lastErr || new Error('Groq: all models failed');
+  if (!key) throw new Error('Add a Groq API key in Settings → AI Assistant, then try again.');
+  const r = await _aiFetch('https://api.groq.com/openai/v1/chat/completions', {
+    headers:{'Authorization':'Bearer '+key},
+    body:JSON.stringify({model:_aiModel('groq'),messages,max_tokens:2048,temperature:0.7})
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data?.error?.message || 'Groq request failed (HTTP '+r.status+').');
+  return data.choices?.[0]?.message?.content || '';
 }
 
-// ── Puter.js (free Claude / GPT-4o) ─────────────────────────────────────────
-async function _aiPuter(messages, model) {
-  // Puter.js requires a puter.com account session — if not logged in returns "Forbidden"
-  // We handle this gracefully and provide clear instructions
-  if (!window.puter) {
-    await new Promise((res, rej) => {
-      const s = document.createElement('script');
-      s.src = 'https://js.puter.com/v2/';
-      s.onload = res; s.onerror = rej;
-      document.head.appendChild(s);
+// ── Puter: account sign-in belongs to this app's SDK session ─────────────────
+let _puterLoading = null;
+function _aiTimeout(promise, milliseconds, message) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), milliseconds);
+  })]).finally(() => clearTimeout(timer));
+}
+async function _loadPuter() {
+  if (window.puter?.ai) return window.puter;
+  if (!_puterLoading) {
+    const script = document.createElement('script');
+    script.src = 'https://js.puter.com/v2/';
+    _puterLoading = _aiTimeout(new Promise((resolve, reject) => {
+      script.onload = () => window.puter?.ai ? resolve(window.puter) : reject(new Error('Puter did not initialize.'));
+      script.onerror = () => reject(new Error('Could not load Puter. Check your connection and try again.'));
+      document.head.appendChild(script);
+    }), 15000, 'Loading Puter timed out. Check your connection and try again.').catch(error => {
+      script.remove(); _puterLoading = null; throw error;
     });
   }
-
-  // Check if puter is actually authenticated
+  return _puterLoading;
+}
+function _refreshPuterSignIn() {
+  const button = document.getElementById('ai-puter-signin');
+  const selected = document.getElementById('ai-model-sel')?.value.startsWith('puter-');
+  if (!button) return;
+  button.hidden = !selected;
+  if (selected) _loadPuter().catch(() => {}); // Preload before the user's sign-in click.
+}
+document.getElementById('ai-puter-signin')?.addEventListener('click', async () => {
+  const button = document.getElementById('ai-puter-signin');
+  button.disabled = true;
   try {
-    const lastMsg = messages[messages.length - 1];
-    const response = await puter.ai.chat(lastMsg.content, { model });
-    // "Forbidden" = not logged in to puter.com
-    if (response === 'Forbidden' || (typeof response === 'string' && response.startsWith('Forbidden'))) {
-      throw new Error('PUTER_FORBIDDEN');
+    if (!window.puter?.auth) {
+      await _loadPuter();
+      _aiAddMessage('assistant', 'Puter is ready. Click Sign in to Puter to open its sign-in window.', false);
+      return;
     }
-    if (typeof response === 'string') return response;
-    // Handle streaming response object
-    if (response && typeof response === 'object') {
-      if (response.message?.content) return response.message.content;
-      if (response.text) return response.text;
-      if (response.toString && response.toString() !== '[object Object]') return response.toString();
-    }
-    return String(response || '');
-  } catch(e) {
-    if (e.message === 'PUTER_FORBIDDEN' || (e.message && e.message.includes('Forbidden'))) {
-      throw new Error(
-        'Puter.js requires a free puter.com account.\n\n' +
-        'To use Puter AI:\n' +
-        '1. Go to puter.com and create a free account\n' +
-        '2. Stay logged in on puter.com in any tab\n' +
-        '3. Come back to Nova and try again\n\n' +
-        'Alternatively, use Groq (free, no account needed) or add your own API key.'
-      );
-    }
-    throw e;
+    // Start synchronously from the click so popup blockers retain user activation.
+    await _aiTimeout(window.puter.auth.signIn(), 120000, 'Puter sign-in timed out. Please try again.');
+    _aiAddMessage('assistant', 'Signed in to Puter. You can send your message now.', false);
+  } catch (error) {
+    _aiAddMessage('assistant', 'Puter sign-in failed: ' + (error.message || error.msg || 'Please try again.'), false);
+  } finally { button.disabled = false; }
+});
+async function _aiPuter(messages, model) {
+  const sdk = await _loadPuter();
+  if (!await sdk.auth.isSignedIn()) throw new Error('Click Sign in to Puter above the conversation, then send your message again.');
+  const response = await _aiTimeout(sdk.ai.chat(messages, {model}), 45000, 'Puter request timed out. Please try again.');
+  if (response?.error) throw new Error(response.error.message || response.error.msg || 'Puter rejected the request.');
+  if (typeof response === 'string') {
+    if (response.startsWith('Forbidden')) throw new Error('Sign in to Puter again using the button above the conversation.');
+    return response;
   }
+  const content = response?.message?.content ?? response?.text;
+  if (Array.isArray(content)) return content.map(part => part.text || '').join('\n');
+  return content || '';
 }
 
 // ── Anthropic ────────────────────────────────────────────────────────────────
 async function _aiAnthropic(messages) {
-  const key = getAIKey('anthropic');
+  const key = await getAIKey('anthropic');
   if (!key) throw new Error('No Anthropic API key. Go to Settings → AI Assistant to add one.');
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
+  const r = await _aiFetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type':'application/json', 'x-api-key':key,
                'anthropic-version':'2023-06-01' },
-    body: JSON.stringify({ model:'claude-sonnet-4-5', max_tokens:2048,
-      messages: messages.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })) })
+    body: JSON.stringify({ model:_aiModel('anthropic'), max_tokens:2048,
+      system: messages.filter(m => m.role === 'system').map(m => m.content).join('\n'),
+      messages: messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content })) })
   });
   if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e?.error?.message || 'HTTP '+r.status); }
   const d = await r.json();
@@ -7617,12 +7530,12 @@ async function _aiAnthropic(messages) {
 
 // ── OpenAI ───────────────────────────────────────────────────────────────────
 async function _aiOpenAI(messages) {
-  const key = getAIKey('openai');
+  const key = await getAIKey('openai');
   if (!key) throw new Error('No OpenAI API key. Go to Settings → AI Assistant to add one.');
-  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+  const r = await _aiFetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type':'application/json', 'Authorization':'Bearer '+key },
-    body: JSON.stringify({ model:'gpt-4.1', messages, max_tokens:2048 })
+    body: JSON.stringify({ model:_aiModel('openai'), messages, max_tokens:2048 })
   });
   if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e?.error?.message || 'HTTP '+r.status); }
   const d = await r.json();
@@ -7631,28 +7544,28 @@ async function _aiOpenAI(messages) {
 
 // ── Google Gemini ─────────────────────────────────────────────────────────────
 async function _aiGoogle(messages) {
-  const key = getAIKey('google');
+  const key = await getAIKey('google');
   if (!key) throw new Error('No Google API key. Go to Settings → AI Assistant to add one.');
-  const contents = messages.map(m => ({
+  const contents = messages.filter(m => m.role !== 'system').map(m => ({
     role: m.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: m.content }]
   }));
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`, {
+  const r = await _aiFetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(_aiModel('google'))}:generateContent?key=${encodeURIComponent(key)}`, {
     method: 'POST', headers: { 'Content-Type':'application/json' },
-    body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 2048 } })
+    body: JSON.stringify({ contents, systemInstruction:{parts:[{text:messages.filter(m => m.role === 'system').map(m => m.content).join('\n')}]}, generationConfig: { maxOutputTokens: 2048 } })
   });
   if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e?.error?.message || 'HTTP '+r.status); }
   const d = await r.json();
   return d.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
-// ── Together AI (Free tier) ──────────────────────────────────────────────────────
+// ── Together AI ──────────────────────────────────────────────────────
 async function _aiTogether(messages) {
-  const key = getAIKey('together');
-  if (!key) throw new Error('Together AI needs a free API key.\n\nGet yours at together.ai (no credit card).\nSettings → AI Assistant → Together AI key.');
-  const r = await fetch('https://api.together.xyz/v1/chat/completions', {
+  const key = await getAIKey('together');
+  if (!key) throw new Error('Add a Together AI API key and model ID in Settings → AI Assistant.');
+  const r = await _aiFetch('https://api.together.xyz/v1/chat/completions', {
     method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
-    body:JSON.stringify({model:'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free',messages,max_tokens:2048})
+    body:JSON.stringify({model:_aiModel('together'),messages,max_tokens:2048})
   });
   if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e?.error?.message||'HTTP '+r.status);}
   const d=await r.json();
@@ -7660,13 +7573,13 @@ async function _aiTogether(messages) {
 }
 // ── OpenRouter ────────────────────────────────────────────────────────────────
 async function _aiOpenRouter(messages) {
-  const key = getAIKey('openrouter');
+  const key = await getAIKey('openrouter');
   if (!key) throw new Error('No OpenRouter API key. Go to Settings → AI Assistant to add one.');
-  const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const r = await _aiFetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type':'application/json', 'Authorization':'Bearer '+key,
-               'HTTP-Referer':'nova-browser', 'X-Title':'Nova Browser' },
-    body: JSON.stringify({ model:'anthropic/claude-3.5-sonnet', messages, max_tokens:2048 })
+               'X-Title':'Nova Browser' },
+    body: JSON.stringify({ model:_aiModel('openrouter'), messages, max_tokens:2048 })
   });
   if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e?.error?.message || 'HTTP '+r.status); }
   const d = await r.json();
@@ -7674,70 +7587,6 @@ async function _aiOpenRouter(messages) {
 }
 
 // ── Send message ──────────────────────────────────────────────────────────────
-async function aiSend() {
-  if (_aiTyping) return;
-  const inp  = document.getElementById('ai-input');
-  const msgs = document.getElementById('ai-messages');
-  if (!inp || !msgs) return;
-  const text = inp.value.trim();
-  if (!text) return;
-  inp.value = '';
-  inp.style.height = '';
-
-  // Build messages with optional page context
-  const t = curTab();
-  const includeCtx = document.getElementById('sp-ai-context')?.checked !== false;
-  const systemMsg = 'You are Nova AI, a helpful browser assistant built into Nova Browser by DTS (Developpement Team Studios). Be concise and helpful.'
-    + (includeCtx && t && t.url && t.url !== 'nova://newtab'
-      ? `\n\nThe user is currently on: ${t.title || ''} (${t.url})` : '');
-
-  const msgs_to_send = [
-    { role: 'user', content: systemMsg + '\n\n' + text },
-    ..._aiHistory.slice(-10), // last 10 messages for context
-  ].filter((_, i) => i === 0 || true);
-
-  // Actually build proper history
-  const history = [{ role:'user', content: systemMsg }];
-  _aiHistory.slice(-8).forEach(m => history.push(m));
-  history.push({ role:'user', content: text });
-
-  // Add user message to UI
-  const userEl = document.createElement('div');
-  userEl.className = 'ai-msg user'; userEl.textContent = text;
-  msgs.appendChild(userEl);
-
-  // Thinking indicator
-  const thinkEl = document.createElement('div');
-  thinkEl.className = 'ai-msg thinking'; thinkEl.textContent = 'Thinking…';
-  msgs.appendChild(thinkEl);
-  msgs.scrollTop = msgs.scrollHeight;
-
-  _aiTyping = true;
-  document.getElementById('ai-send-btn').disabled = true;
-
-  try {
-    const provider = document.getElementById('ai-model-sel')?.value || 'groq-free';
-    const reply = await _aiCallProvider(provider, history);
-
-    thinkEl.remove();
-    const replyEl = document.createElement('div');
-    replyEl.className = 'ai-msg assistant';
-    replyEl.textContent = reply;
-    msgs.appendChild(replyEl);
-
-    _aiHistory.push({ role:'user', content:text });
-    _aiHistory.push({ role:'assistant', content:reply });
-    if (_aiHistory.length > 40) _aiHistory = _aiHistory.slice(-40);
-
-  } catch(e) {
-    thinkEl.className = 'ai-msg error';
-    thinkEl.textContent = '❌ ' + e.message;
-  }
-  _aiTyping = false;
-  document.getElementById('ai-send-btn').disabled = false;
-  msgs.scrollTop = msgs.scrollHeight;
-}
-
 // ── Wire UI ──────────────────────────────────────────────────────────────────
 document.getElementById('ai-panel-close')?.addEventListener('click', closeAI);
 document.getElementById('ai-send-btn')?.addEventListener('click', aiSend);
@@ -7766,6 +7615,27 @@ document.addEventListener('keydown', e => {
   }
 });
 
+for (const provider of Object.keys(AI_DEFAULT_MODELS)) {
+  const keyInput = document.getElementById('ai-key-' + provider);
+  const row = keyInput?.closest('.sp-row');
+  if (!row) continue;
+  const label = document.createElement('label');
+  label.style.cssText = 'display:flex;align-items:center;gap:8px;width:100%;font-size:11px;color:var(--txtd)';
+  label.textContent = 'Model ID';
+  const input = document.createElement('input');
+  input.id = 'ai-model-' + provider;
+  input.type = 'text'; input.spellcheck = false;
+  input.placeholder = AI_DEFAULT_MODELS[provider] || 'Required: choose a model from your provider';
+  input.value = localStorage.getItem('novaAIModel_' + provider) || '';
+  input.style.cssText = 'flex:1;min-width:0;background:var(--surf2);color:var(--txt);border:1px solid var(--bdr);border-radius:6px;padding:6px';
+  input.addEventListener('change', () => {
+    const value = input.value.trim();
+    if (value) localStorage.setItem('novaAIModel_' + provider, value);
+    else localStorage.removeItem('novaAIModel_' + provider);
+  });
+  label.appendChild(input); row.appendChild(label);
+}
+
 // Restore provider preference
 (function _restoreAIPrefs(){
   try {
@@ -7778,15 +7648,20 @@ document.addEventListener('keydown', e => {
     }
   } catch(e) {}
   _restoreAIKeyInputs();
+  _refreshPuterSignIn();
 })();
 
 document.getElementById('ai-model-sel')?.addEventListener('change', e => {
+  const settingsProvider = document.getElementById('sp-ai-provider');
+  if (settingsProvider) settingsProvider.value = e.target.value;
+  _refreshPuterSignIn();
   try { localStorage.setItem('novaAIProvider', e.target.value); } catch(e) {}
 });
 document.getElementById('sp-ai-provider')?.addEventListener('change', e => {
   try { localStorage.setItem('novaAIProvider', e.target.value); } catch(e) {}
   const sel = document.getElementById('ai-model-sel');
   if (sel) sel.value = e.target.value;
+  _refreshPuterSignIn();
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -7955,7 +7830,7 @@ async function _aiSendRaw(prompt) {
 
   try {
     const provider = document.getElementById('ai-model-sel')?.value || 'groq-free';
-    const history = [{ role:'user', content: 'You are Nova AI, a helpful browser assistant. Be concise.' }];
+    const history = [{ role:'system', content: 'You are Nova AI, a helpful browser assistant. Be concise.' }];
     _aiHistory.slice(-8).forEach(m => history.push(m));
     history.push({ role:'user', content: prompt });
 
@@ -7998,10 +7873,8 @@ document.getElementById('ai-copy-btn')?.addEventListener('click', () => {
   });
 });
 
-// ── Override aiSend to use markdown rendering ─────────────────────────────────
-// Patch the existing aiSend to use _aiAddMessage for markdown
-const _origAiSend = window.aiSend;
-window.aiSend = async function() {
+// ── Send a message with markdown rendering ─────────────────────────────────
+async function aiSend() {
   if (_aiTyping) return;
   const inp  = document.getElementById('ai-input');
   const msgs = document.getElementById('ai-messages');
@@ -8019,7 +7892,7 @@ window.aiSend = async function() {
     + (includeCtx && t && t.url && t.url !== 'nova://newtab'
       ? `\n\nUser is on: ${t.title || ''} (${t.url})` : '');
 
-  const history = [{ role:'user', content: sysMsg }];
+  const history = [{ role:'system', content: sysMsg }];
   _aiHistory.slice(-8).forEach(m => history.push(m));
   history.push({ role:'user', content: text });
 
@@ -8046,9 +7919,7 @@ window.aiSend = async function() {
   _aiTyping = false;
   document.getElementById('ai-send-btn').disabled = false;
   if (msgs) msgs.scrollTop = msgs.scrollHeight;
-};
-// Also reassign for send button
-document.getElementById('ai-send-btn')?.addEventListener('click', window.aiSend);
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // NEW SETTINGS — Startup, Scroll, Spellcheck, Zoom, Images, JavaScript
@@ -8102,20 +7973,20 @@ document.getElementById('sp-spellcheck')?.addEventListener('change', e => {
 });
 
 // Default zoom
-(function _restoreDefaultZoom(){
-  const z = parseInt(localStorage.getItem('novaDefaultZoom') || '100');
-  const el = document.getElementById('sp-default-zoom');
-  if(el) el.value = String(z);
-  if(z !== 100 && bridge) {
-    const t = curTab();
-    if(t) bridge?.setZoom({ tabId: t.id, zoom: z });
-  }
-})();
-document.getElementById('sp-default-zoom')?.addEventListener('change', e => {
-  const z = parseInt(e.target.value);
-  try{ localStorage.setItem('novaDefaultZoom', String(z)); }catch(e){}
+function applyDefaultZoom(value, persist = false) {
+  let percent = Number(value);
+  if (percent > 0 && percent <= 3) percent *= 100; // Migrate older factor settings.
+  if (!Number.isFinite(percent) || percent < 30 || percent > 300) percent = 100;
+  document.querySelectorAll('#sp-default-zoom, #sp-default-zoom-accessibility').forEach(el => {
+    el.value = String(percent);
+  });
+  if (persist) localStorage.setItem('novaDefaultZoom', String(percent));
   const t = curTab();
-  if(t && bridge) bridge?.setZoom({ tabId: t.id, zoom: z });
+  if (t) bridge?.setZoom({ tabId: t.id, factor: percent / 100 });
+}
+applyDefaultZoom(localStorage.getItem('novaDefaultZoom') || '100');
+document.querySelectorAll('#sp-default-zoom, #sp-default-zoom-accessibility').forEach(el => {
+  el.addEventListener('change', e => applyDefaultZoom(e.target.value, true));
 });
 
 // Show images
